@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd.exe /c 'tasklist | findstr /I \"Gen\"')",
+      "Bash(cmd.exe /c \"tasklist /FI \\\\\"IMAGENAME eq Gen Doc.exe\\\\\"\")",
+      "Bash(tasklist)"
+    ]
+  }
+}
