@@ -45,6 +45,7 @@ import {
   wrapSelection,
 } from '../lib/markdown-commands';
 import { cn } from '../lib/utils';
+import { useT } from '../lib/i18n';
 
 export type MarkdownViewMode = 'source' | 'split' | 'preview';
 
@@ -83,6 +84,7 @@ export function MarkdownToolbar({
   exportPdfBusy,
   canExportPdf,
 }: Props): JSX.Element {
+  const t = useT();
   const run = (fn: (v: EditorView) => void) => {
     const v = getView();
     if (!v) return;
@@ -98,26 +100,26 @@ export function MarkdownToolbar({
   // Disabling these buttons makes the constraint visible and forces an
   // intentional view-mode switch first.
   const sourceHidden = viewMode === 'preview';
-  const disabledTitle = '請先切換回原始碼或分割模式';
+  const disabledTitle = t('請先切換回原始碼或分割模式', 'Switch back to source or split mode first');
 
   return (
     <div className="flex items-center flex-wrap gap-0.5 px-2 py-1 border-b bg-secondary/30">
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '粗體 (Ctrl+B)'}
+        title={sourceHidden ? disabledTitle : t('粗體 (Ctrl+B)', 'Bold (Ctrl+B)')}
         disabled={sourceHidden}
         onClick={() => run((v) => wrapSelection(v, '**', '**'))}
       >
         <Bold className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '斜體 (Ctrl+I)'}
+        title={sourceHidden ? disabledTitle : t('斜體 (Ctrl+I)', 'Italic (Ctrl+I)')}
         disabled={sourceHidden}
         onClick={() => run((v) => wrapSelection(v, '_', '_'))}
       >
         <Italic className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '行內 code (Ctrl+`)'}
+        title={sourceHidden ? disabledTitle : t('行內 code (Ctrl+`)', 'Inline code (Ctrl+`)')}
         disabled={sourceHidden}
         onClick={() => run((v) => wrapSelection(v, '`', '`'))}
       >
@@ -125,21 +127,21 @@ export function MarkdownToolbar({
       </ToolbarBtn>
       <Divider />
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '標題 1 (Ctrl+1)'}
+        title={sourceHidden ? disabledTitle : t('標題 1 (Ctrl+1)', 'Heading 1 (Ctrl+1)')}
         disabled={sourceHidden}
         onClick={() => run((v) => setLinePrefix(v, '# '))}
       >
         <Heading1 className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '標題 2 (Ctrl+2)'}
+        title={sourceHidden ? disabledTitle : t('標題 2 (Ctrl+2)', 'Heading 2 (Ctrl+2)')}
         disabled={sourceHidden}
         onClick={() => run((v) => setLinePrefix(v, '## '))}
       >
         <Heading2 className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '標題 3 (Ctrl+3)'}
+        title={sourceHidden ? disabledTitle : t('標題 3 (Ctrl+3)', 'Heading 3 (Ctrl+3)')}
         disabled={sourceHidden}
         onClick={() => run((v) => setLinePrefix(v, '### '))}
       >
@@ -147,14 +149,14 @@ export function MarkdownToolbar({
       </ToolbarBtn>
       <Divider />
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '無序列表 (Ctrl+Shift+L)'}
+        title={sourceHidden ? disabledTitle : t('無序列表 (Ctrl+Shift+L)', 'Bulleted list (Ctrl+Shift+L)')}
         disabled={sourceHidden}
         onClick={() => run((v) => setLinePrefix(v, '- '))}
       >
         <List className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '有序列表 (Ctrl+Shift+O)'}
+        title={sourceHidden ? disabledTitle : t('有序列表 (Ctrl+Shift+O)', 'Numbered list (Ctrl+Shift+O)')}
         disabled={sourceHidden}
         onClick={() => run((v) => setLinePrefix(v, '1. '))}
       >
@@ -167,7 +169,7 @@ export function MarkdownToolbar({
           MarkdownEditor.tsx (next to the Mod-Shift-l/o pair); tooltip here
           updated to match the Ctrl+Shift+L/Ctrl+Shift+O cousins exactly. */}
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '引用 (Ctrl+Shift+Q)'}
+        title={sourceHidden ? disabledTitle : t('引用 (Ctrl+Shift+Q)', 'Quote (Ctrl+Shift+Q)')}
         disabled={sourceHidden}
         onClick={() => run((v) => setLinePrefix(v, '> '))}
       >
@@ -175,7 +177,7 @@ export function MarkdownToolbar({
       </ToolbarBtn>
       <Divider />
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '連結 (Ctrl+K)'}
+        title={sourceHidden ? disabledTitle : t('連結 (Ctrl+K)', 'Link (Ctrl+K)')}
         disabled={sourceHidden}
         onClick={onInsertLink}
       >
@@ -201,28 +203,28 @@ export function MarkdownToolbar({
           rather than spelling formats — keeping one source of truth for
           mode names across the entry-point and the dialog. */}
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '插入圖片（URL 或本機檔案）'}
+        title={sourceHidden ? disabledTitle : t('插入圖片（URL 或本機檔案）', 'Insert image (URL or local file)')}
         disabled={sourceHidden}
         onClick={onInsertImage}
       >
         <ImageIcon className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '程式碼區塊'}
+        title={sourceHidden ? disabledTitle : t('程式碼區塊', 'Code block')}
         disabled={sourceHidden}
         onClick={() => run(insertCodeBlock)}
       >
         <Code2 className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '表格'}
+        title={sourceHidden ? disabledTitle : t('表格', 'Table')}
         disabled={sourceHidden}
         onClick={() => run(insertTable)}
       >
         <TableIcon className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '分隔線'}
+        title={sourceHidden ? disabledTitle : t('分隔線', 'Horizontal rule')}
         disabled={sourceHidden}
         onClick={() => run(insertHr)}
       >
@@ -230,7 +232,7 @@ export function MarkdownToolbar({
       </ToolbarBtn>
       <Divider />
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '尋找與取代 (Ctrl+F)'}
+        title={sourceHidden ? disabledTitle : t('尋找與取代 (Ctrl+F)', 'Find & Replace (Ctrl+F)')}
         disabled={sourceHidden}
         onClick={() => run((v) => openSearchPanel(v))}
       >
@@ -260,7 +262,7 @@ export function MarkdownToolbar({
           slide respectively, so each format gets its own visual cue while
           sharing the verb "跳至…". */}
       <ToolbarBtn
-        title={sourceHidden ? disabledTitle : '跳至行… (Ctrl+G)'}
+        title={sourceHidden ? disabledTitle : t('跳至行… (Ctrl+G)', 'Go to line… (Ctrl+G)')}
         disabled={sourceHidden}
         onClick={() => run(gotoLine)}
       >
@@ -275,10 +277,10 @@ export function MarkdownToolbar({
         <ToolbarBtn
           title={
             !canExportPdf
-              ? '預覽尚未產生，請稍候再輸出'
+              ? t('預覽尚未產生，請稍候再輸出', 'Preview not ready — please wait before exporting')
               : exportPdfBusy
-                ? '正在輸出 PDF…'
-                : '輸出為 PDF'
+                ? t('正在輸出 PDF…', 'Exporting PDF…')
+                : t('輸出為 PDF', 'Export as PDF')
           }
           disabled={!canExportPdf || exportPdfBusy}
           onClick={onExportPdf}
@@ -287,7 +289,7 @@ export function MarkdownToolbar({
         </ToolbarBtn>
         <Divider />
         <ToolbarBtn
-          title={outlineOpen ? '隱藏大綱' : '顯示大綱（標題列表）'}
+          title={outlineOpen ? t('隱藏大綱', 'Hide outline') : t('顯示大綱（標題列表）', 'Show outline (heading list)')}
           active={outlineOpen}
           onClick={onToggleOutline}
         >
@@ -295,21 +297,21 @@ export function MarkdownToolbar({
         </ToolbarBtn>
         <Divider />
         <ToolbarBtn
-          title="只看原始碼"
+          title={t('只看原始碼', 'Source only')}
           active={viewMode === 'source'}
           onClick={() => onViewModeChange('source')}
         >
           <FileText className="h-3.5 w-3.5" />
         </ToolbarBtn>
         <ToolbarBtn
-          title="分割：原始碼 + 預覽"
+          title={t('分割：原始碼 + 預覽', 'Split: source + preview')}
           active={viewMode === 'split'}
           onClick={() => onViewModeChange('split')}
         >
           <Columns2 className="h-3.5 w-3.5" />
         </ToolbarBtn>
         <ToolbarBtn
-          title="只看預覽"
+          title={t('只看預覽', 'Preview only')}
           active={viewMode === 'preview'}
           onClick={() => onViewModeChange('preview')}
         >

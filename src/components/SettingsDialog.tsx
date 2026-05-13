@@ -18,6 +18,7 @@ import { notify } from '../store/toast';
 import { Check, Eye, EyeOff, Loader2, ShieldCheck } from 'lucide-react';
 import type { UserConfig } from '../types/ipc';
 import { SUPPORTED_MODELS, resolveSupportedModelId } from '../types/ai';
+import { useT } from '../lib/i18n';
 
 interface Props {
   open: boolean;
@@ -26,6 +27,8 @@ interface Props {
 }
 
 export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): JSX.Element {
+  // R405 — bilingual.
+  const t = useT();
   /**
    * Wrap close so we flush any in-flight NumberField draft (Temperature /
    * Max tokens) before unmounting. Those inputs commit on `onBlur`, but
@@ -279,9 +282,12 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>設定</DialogTitle>
+          <DialogTitle>{t('設定', 'Settings')}</DialogTitle>
           <DialogDescription>
-            API key 透過 OS keystore（Windows DPAPI / macOS Keychain）加密儲存，明文不落地。
+            {t(
+              'API key 透過 OS keystore（Windows DPAPI / macOS Keychain）加密儲存，明文不落地。',
+              'The API key is encrypted via the OS keystore (Windows DPAPI / macOS Keychain) — never written to disk in plaintext.',
+            )}
           </DialogDescription>
         </DialogHeader>
 
@@ -290,7 +296,7 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
           {hasKey ? (
             <div className="flex items-center gap-2 text-sm">
               <ShieldCheck className="h-4 w-4 text-emerald-500" />
-              <span>已儲存（加密）</span>
+              <span>{t('已儲存（加密）', 'Saved (encrypted)')}</span>
               {/* 清除 was the lone titleless button left in this dialog after
                   the systematic title pass that landed on its siblings: the
                   visibility toggle (line ~241), 儲存 (line ~258), and 測試連線
@@ -317,11 +323,11 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
                 onClick={onClearKeyClick}
                 title={
                   confirmClearKey
-                    ? '再次點擊以確認移除 API key（不可復原）'
-                    : '移除已儲存的 API key'
+                    ? t('再次點擊以確認移除 API key（不可復原）', 'Click again to confirm removing the API key (irreversible)')
+                    : t('移除已儲存的 API key', 'Remove the saved API key')
                 }
               >
-                {confirmClearKey ? '再次點擊以確認' : '清除'}
+                {confirmClearKey ? t('再次點擊以確認', 'Click again to confirm') : t('清除', 'Clear')}
               </Button>
             </div>
           ) : (
@@ -357,8 +363,8 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
                 size="icon"
                 variant="ghost"
                 onClick={() => setShowKey((b) => !b)}
-                title={showKey ? '隱藏 API key' : '顯示 API key'}
-                aria-label={showKey ? '隱藏 API key' : '顯示 API key'}
+                title={showKey ? t('隱藏 API key', 'Hide API key') : t('顯示 API key', 'Show API key')}
+                aria-label={showKey ? t('隱藏 API key', 'Hide API key') : t('顯示 API key', 'Show API key')}
               >
                 {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </Button>
@@ -392,10 +398,10 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
                 onClick={saveKey}
                 disabled={!keyDraft.trim()}
                 title={!keyDraft.trim()
-                  ? '輸入 API key 後即可儲存 (Enter)'
-                  : '儲存 API key (Enter)'}
+                  ? t('輸入 API key 後即可儲存 (Enter)', 'Enter an API key to save (Enter)')
+                  : t('儲存 API key (Enter)', 'Save API key (Enter)')}
               >
-                儲存
+                {t('儲存', 'Save')}
               </Button>
             </div>
           )}
@@ -408,7 +414,13 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
               through Save → Test → 401 → "what was wrong with my key?". */}
           {!hasKey && keyDraft.trim() && !keyDraft.trim().startsWith('sk-ant-') && (
             <div className="text-[11px] text-amber-500">
-              這看起來不像 Anthropic 金鑰（通常以 <code className="font-mono">sk-ant-</code> 開頭）。確認沒貼錯後仍可儲存。
+              {/* R405 — single-string version. The original mixed inline
+                  `<code>sk-ant-</code>` inside the Chinese string; we drop
+                  the styled wrapper to keep one translatable unit. */}
+              {t(
+                '這看起來不像 Anthropic 金鑰（通常以 sk-ant- 開頭）。確認沒貼錯後仍可儲存。',
+                "This doesn't look like an Anthropic key (they usually start with sk-ant-). Confirm it is right, then save anyway.",
+              )}
             </div>
           )}
           {hasKey && (
@@ -446,12 +458,15 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
                 disabled={pingState.status === 'pending'}
                 title={
                   pingState.status === 'pending'
-                    ? '正在測試連線…'
-                    : '向 Anthropic 發送一次測試請求，確認 API key 與目前模型可用'
+                    ? t('正在測試連線…', 'Testing connection…')
+                    : t(
+                        '向 Anthropic 發送一次測試請求，確認 API key 與目前模型可用',
+                        'Send a test request to Anthropic to verify the API key and current model work',
+                      )
                 }
               >
                 {pingState.status === 'pending' && <Loader2 className="h-3 w-3 animate-spin" />}
-                測試連線
+                {t('測試連線', 'Test connection')}
               </Button>
               {/* R154 — SR-readable result of the test-connection button.
                   Both states materialize asynchronously after the user clicks
@@ -474,7 +489,7 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
         </section>
 
         <section className="space-y-2">
-          <h3 className="text-sm font-medium">預設模型</h3>
+          <h3 className="text-sm font-medium">{t('預設模型', 'Default model')}</h3>
           {/* The h3 reads "預設模型", which a literal-minded user parses as
               "applies only to *new* sessions — won't touch the chat I have
               open right now". App.tsx:202-225 actually mirrors this patch
@@ -491,7 +506,10 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
           <select
             value={config.defaultModel}
             onChange={(e) => patch({ defaultModel: e.target.value })}
-            title="切換預設模型，並立即套用至目前對話（不會清空對話內容）"
+            title={t(
+              '切換預設模型，並立即套用至目前對話（不會清空對話內容）',
+              'Switch the default model and apply to the current conversation immediately (does not clear messages)',
+            )}
             className="w-full bg-secondary/40 rounded px-2 py-1 text-sm"
           >
             {SUPPORTED_MODELS.map((m) => (
@@ -544,27 +562,36 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
               很難判斷該不該勾。Tooltip 風格沿用 line 311 / 346 的「動詞
               開頭 + 副作用括註」── 把行為與代價講清楚。 */}
           <CheckboxRow
-            label="啟用 prompt cache"
+            label={t('啟用 prompt cache', 'Enable prompt cache')}
             checked={config.promptCache}
             onChange={(v) => patch({ promptCache: v })}
-            title="多輪對話中重複使用 system prompt 與工具定義的快取，可大幅降低 token 費用；首次寫入以 1.25× 計價，關閉後一律以標準費率計算"
+            title={t(
+              '多輪對話中重複使用 system prompt 與工具定義的快取，可大幅降低 token 費用；首次寫入以 1.25× 計價，關閉後一律以標準費率計算',
+              'Reuse the cached system prompt and tool definitions across turns to cut token cost; first write bills at 1.25×, disabling falls back to standard rates',
+            )}
           />
           <CheckboxRow
-            label="預設將 AI 對話歷史內嵌至 .gd"
+            label={t('預設將 AI 對話歷史內嵌至 .gd', 'Embed AI chat history into .gd by default')}
             checked={config.embedChatHistoryDefault}
             onChange={(v) => patch({ embedChatHistoryDefault: v })}
-            title="新建檔案時預設將 AI 對話歷史一併儲存進 .gd 容器；每個檔案可在工作區設定中個別覆蓋"
+            title={t(
+              '新建檔案時預設將 AI 對話歷史一併儲存進 .gd 容器；每個檔案可在工作區設定中個別覆蓋',
+              'New workspaces save the AI chat history into the .gd archive by default; each file can override this in its workspace settings',
+            )}
           />
           <CheckboxRow
-            label="啟動時自動開啟上次的檔案"
+            label={t('啟動時自動開啟上次的檔案', 'Reopen the last workspace on launch')}
             checked={config.autoOpenLastWorkspace}
             onChange={(v) => patch({ autoOpenLastWorkspace: v })}
-            title="啟動 Gen-Doc 時自動還原最近一次開啟的檔案；關閉後每次啟動都以空白工作區開始"
+            title={t(
+              '啟動 Gen-Doc 時自動還原最近一次開啟的檔案；關閉後每次啟動都以空白工作區開始',
+              'When launching Gen-Doc, restore the most recently opened workspace; disable to start blank every launch',
+            )}
           />
         </section>
 
         <section className="space-y-2">
-          <h3 className="text-sm font-medium">自動儲存</h3>
+          <h3 className="text-sm font-medium">{t('自動儲存', 'Auto-save')}</h3>
           {/* Off / 30s / 1min / 5min — common cadences. Auto-save only writes
               when the workspace already has a path on disk; new untitled
               workspaces won't pop a Save-As dialog behind your back. */}
@@ -587,13 +614,16 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
           <select
             value={String(config.autoSaveIntervalMs)}
             onChange={(e) => patch({ autoSaveIntervalMs: parseInt(e.target.value, 10) })}
-            title="切換自動儲存間隔（僅對已儲存到磁碟的檔案生效，未命名檔案請先按 Ctrl+S）"
+            title={t(
+              '切換自動儲存間隔（僅對已儲存到磁碟的檔案生效，未命名檔案請先按 Ctrl+S）',
+              'Switch auto-save interval (only applies to files saved to disk — unsaved workspaces require Ctrl+S first)',
+            )}
             className="w-full bg-secondary/40 rounded px-2 py-1 text-sm"
           >
-            <option value="0">關閉</option>
-            <option value="30000">30 秒</option>
-            <option value="60000">1 分鐘</option>
-            <option value="300000">5 分鐘</option>
+            <option value="0">{t('關閉', 'Off')}</option>
+            <option value="30000">{t('30 秒', '30 seconds')}</option>
+            <option value="60000">{t('1 分鐘', '1 minute')}</option>
+            <option value="300000">{t('5 分鐘', '5 minutes')}</option>
           </select>
           {/* Surface the silent-noop guard at App.tsx:450 (`if (!ws.filePath)
               return`). Without this hint, a user who enables 自動儲存 on a
@@ -607,9 +637,35 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
               moot and the line would just be noise. */}
           {config.autoSaveIntervalMs > 0 && (
             <p className="text-[11px] text-muted-foreground leading-snug">
-              提示：自動儲存僅對已儲存過的檔案生效；新建的未命名檔案請先按 Ctrl+S 命名後才會自動儲存。
+              {t(
+                '提示：自動儲存僅對已儲存過的檔案生效；新建的未命名檔案請先按 Ctrl+S 命名後才會自動儲存。',
+                'Note: auto-save only fires for files already on disk. New untitled workspaces need Ctrl+S to name them first before auto-save kicks in.',
+              )}
             </p>
           )}
+        </section>
+
+        {/* R405 — language picker in Settings, mirror of the toolbar Globe
+            icon. `null` = follow OS locale; explicit 'zh' / 'en' override.
+            Sibling pattern to the auto-save / model selects above. */}
+        <section className="space-y-2">
+          <h3 className="text-sm font-medium">{t('語言', 'Language')}</h3>
+          <select
+            value={config.locale ?? 'auto'}
+            onChange={(e) => {
+              const v = e.target.value;
+              patch({ locale: v === 'auto' ? null : (v as 'zh' | 'en') });
+            }}
+            title={t(
+              '切換 UI 語言（auto = 跟隨作業系統）',
+              'Switch UI language (auto = follow OS)',
+            )}
+            className="w-full bg-secondary/40 rounded px-2 py-1 text-sm"
+          >
+            <option value="auto">{t('自動（跟隨作業系統）', 'Auto (follow OS)')}</option>
+            <option value="zh">繁體中文</option>
+            <option value="en">English</option>
+          </select>
         </section>
 
         {/* 主題 picker intentionally removed — the app is pinned to a

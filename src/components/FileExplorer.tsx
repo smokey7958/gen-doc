@@ -34,6 +34,7 @@ import { notify } from '../store/toast';
 import { cn } from '../lib/utils';
 import { bumpLoadGen, currentLoadGen } from '../lib/workspace-load-gen';
 import { tryEnterOpen, exitOpen } from '../lib/workspace-open-busy';
+import { useT, tImp } from '../lib/i18n';
 
 interface Props {
   /** Currently opened folder (absolute path). Null = no folder picked yet. */
@@ -390,14 +391,14 @@ export function FileExplorer({ rootPath, onPickFolder, onCollapse }: Props): JSX
                 <button
                   type="button"
                   onClick={() => setError(null)}
-                  title="關閉錯誤訊息"
+                  title={tImp('關閉錯誤訊息', 'Dismiss error message')}
                   // R152 — icon-only-button accessible-name parity. Mirrors
                   // AIPanel.tsx:609-610 verbatim (the canonical close-X
                   // doublet) and TabBar.tsx:423-424 / line ~547 (this same
                   // round). The visible character is `×` — assistive tech
                   // either reads it as「乘號」or skips it; an explicit
                   // aria-label closes the gap.
-                  aria-label="關閉錯誤訊息"
+                  aria-label={tImp('關閉錯誤訊息', 'Dismiss error message')}
                   className="opacity-60 hover:opacity-100 shrink-0 leading-none"
                 >
                   ×
@@ -428,12 +429,14 @@ function Header({
   onRefresh: () => void;
   onCollapse: () => void;
 }): JSX.Element {
-  const folderName = rootPath ? basename(rootPath) : '檔案總管';
+  // R405 — bilingual.
+  const t = useT();
+  const folderName = rootPath ? basename(rootPath) : t('檔案總管', 'File Explorer');
   return (
     <div className="flex items-center h-9 px-2 border-b border-border gap-0.5 shrink-0">
       <span
         className="font-semibold tracking-wide uppercase text-[10px] text-muted-foreground truncate flex-1"
-        title={rootPath ?? '尚未開啟資料夾'}
+        title={rootPath ?? t('尚未開啟資料夾', 'No folder opened yet')}
       >
         {folderName}
       </span>
@@ -446,15 +449,15 @@ function Header({
           (Ctrl+K Ctrl+O); Ctrl+B is handled directly in App.tsx:710-718.
           重新整理 has no global accelerator (F5/Ctrl+R are intentionally
           blocked — see menu.ts:151) so its tooltip stays unchanged. */}
-      <IconBtn title="開啟資料夾… (Ctrl+K Ctrl+O)" onClick={onPickFolder}>
+      <IconBtn title={t('開啟資料夾… (Ctrl+K Ctrl+O)', 'Open folder… (Ctrl+K Ctrl+O)')} onClick={onPickFolder}>
         <FolderInput className="h-3.5 w-3.5" />
       </IconBtn>
       {rootPath ? (
-        <IconBtn title="重新整理" onClick={onRefresh}>
+        <IconBtn title={t('重新整理', 'Refresh')} onClick={onRefresh}>
           <RefreshCw className="h-3.5 w-3.5" />
         </IconBtn>
       ) : null}
-      <IconBtn title="收合檔案總管 (Ctrl+B)" onClick={onCollapse}>
+      <IconBtn title={t('收合檔案總管 (Ctrl+B)', 'Collapse file explorer (Ctrl+B)')} onClick={onCollapse}>
         <PanelLeftClose className="h-3.5 w-3.5" />
       </IconBtn>
     </div>
@@ -483,9 +486,11 @@ function IconBtn({
 }
 
 function EmptyState({ onPickFolder }: { onPickFolder: () => void }): JSX.Element {
+  // R405 — bilingual.
+  const t = useT();
   return (
     <div className="p-3 flex flex-col gap-2 text-muted-foreground">
-      <p>尚未開啟資料夾。</p>
+      <p>{t('尚未開啟資料夾。', 'No folder opened yet.')}</p>
       {/* Three surfaces wire to the same handleOpenFolder (App.tsx:578-590,
           bound to menu.ts:86 → 'menu:openFolder', accelerator Ctrl+K Ctrl+O):
           the top-bar Button at App.tsx:1182 and the header IconBtn above at
@@ -500,14 +505,17 @@ function EmptyState({ onPickFolder }: { onPickFolder: () => void }): JSX.Element
       <button
         type="button"
         onClick={onPickFolder}
-        title="開啟資料夾… (Ctrl+K Ctrl+O)"
+        title={t('開啟資料夾… (Ctrl+K Ctrl+O)', 'Open folder… (Ctrl+K Ctrl+O)')}
         className="px-2 py-1 rounded border border-border bg-background hover:bg-secondary text-foreground text-left"
       >
         <FolderInput className="h-3.5 w-3.5 inline mr-1.5 -mt-0.5" />
-        開啟資料夾…
+        {t('開啟資料夾…', 'Open folder…')}
       </button>
       <p className="text-[10px] leading-relaxed pt-1">
-        選擇後可以瀏覽 .md / .docx / .xlsx / .pptx / .gd 檔案，點擊即會開啟為新頁籤。
+        {t(
+          '選擇後可以瀏覽 .md / .docx / .xlsx / .pptx / .gd 檔案，點擊即會開啟為新頁籤。',
+          'After picking a folder, browse .md / .docx / .xlsx / .pptx / .gd files; click one to open it as a new tab.',
+        )}
       </p>
     </div>
   );
@@ -530,7 +538,7 @@ function Tree({ rootPath, entries, expanded, onToggle }: TreeProps): JSX.Element
   if (list === null) return <LoadingRow depth={0} />;
   if (list === undefined) return <></>;
   if (list.length === 0) {
-    return <div className="px-3 py-2 text-muted-foreground italic">（空資料夾）</div>;
+    return <div className="px-3 py-2 text-muted-foreground italic">{tImp('（空資料夾）', '(Empty folder)')}</div>;
   }
   return (
     <div className="py-1">
@@ -724,7 +732,7 @@ function LoadingRow({ depth }: { depth: number }): JSX.Element {
       style={{ paddingLeft: 4 + depth * 12 + 16 }}
     >
       <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-      <span>載入中…</span>
+      <span>{tImp('載入中…', 'Loading…')}</span>
     </div>
   );
 }
@@ -766,7 +774,10 @@ function useOpenFile(): (filePath: string) => Promise<void> {
         // existing workspace pipeline so chat history / undo scope reset cleanly.
         if (
           useWorkspace.getState().dirty &&
-          !(await window.gendoc.app.confirm('目前的變更尚未儲存，確定開啟其他檔案？'))
+          !(await window.gendoc.app.confirm(tImp(
+            '目前的變更尚未儲存，確定開啟其他檔案？',
+            'There are unsaved changes. Open a different file anyway?',
+          )))
         )
           return;
         // R187 — join the workspace-load-gen exclusion class. Without this,
@@ -782,7 +793,7 @@ function useOpenFile(): (filePath: string) => Promise<void> {
         if (myGen !== currentLoadGen()) return;
         if (opened) useWorkspace.getState().loadFromOpened(opened);
       } catch (e) {
-        notify(`開啟失敗：${(e as Error).message}`, 'error');
+        notify(tImp(`開啟失敗：${(e as Error).message}`, `Failed to open: ${(e as Error).message}`), 'error');
       } finally {
         exitOpen();
       }
@@ -805,7 +816,7 @@ function useOpenFile(): (filePath: string) => Promise<void> {
       const content = await window.gendoc.fs.readFile(filePath);
       const id = useWorkspace.getState().openExternalFile(content, filePath);
       if (!id) {
-        notify(`不支援的檔案類型：${content.name}`, 'warning');
+        notify(tImp(`不支援的檔案類型：${content.name}`, `Unsupported file type: ${content.name}`), 'warning');
       }
     } catch (e) {
       notify(`開啟失敗：${(e as Error).message}`, 'error');

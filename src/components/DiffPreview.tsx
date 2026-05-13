@@ -14,6 +14,7 @@ import type { Tab } from '../types/tab';
 import { Button } from './ui/button';
 import { Check, X, Pencil, Wand2 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { useT } from '../lib/i18n';
 
 interface Props {
   pending: PendingChange;
@@ -35,6 +36,8 @@ interface Props {
 
 export function DiffPreview({ pending, onApply, onReject, onModify, actionsDisabled, keyboardActive }: Props): JSX.Element {
   const tabs = useWorkspace((s) => s.tabs);
+  // R405 — bilingual.
+  const t = useT();
   const opSummaries = useMemo(
     () => pending.changeset.ops.map((op) => describeOp(op, tabs)),
     [pending, tabs],
@@ -86,30 +89,42 @@ export function DiffPreview({ pending, onApply, onReject, onModify, actionsDisab
           onClick={onApply}
           disabled={actionsDisabled}
           className="flex-1"
-          title={actionsDisabled ? '等待目前回合結束後再套用' : keyboardActive ? '套用變更 (Ctrl+Enter)' : '套用變更'}
+          title={
+            actionsDisabled
+              ? t('等待目前回合結束後再套用', 'Wait for the current turn to finish before applying')
+              : keyboardActive
+                ? t('套用變更 (Ctrl+Enter)', 'Apply change (Ctrl+Enter)')
+                : t('套用變更', 'Apply change')
+          }
         >
           <Check className="h-3.5 w-3.5" />
-          套用
+          {t('套用', 'Apply')}
         </Button>
         <Button
           size="sm"
           variant="outline"
           onClick={onModify}
-          title={keyboardActive ? '修改建議 (Ctrl+M)' : '修改建議'}
+          title={keyboardActive ? t('修改建議 (Ctrl+M)', 'Modify suggestion (Ctrl+M)') : t('修改建議', 'Modify suggestion')}
         >
           <Pencil className="h-3 w-3" />
-          修改
+          {t('修改', 'Modify')}
         </Button>
         <Button
           size="sm"
           variant="ghost"
           onClick={onReject}
           disabled={actionsDisabled}
-          title={actionsDisabled ? '等待目前回合結束後再拒絕' : keyboardActive ? '拒絕變更 (Ctrl+Backspace)' : '拒絕變更'}
+          title={
+            actionsDisabled
+              ? t('等待目前回合結束後再拒絕', 'Wait for the current turn to finish before rejecting')
+              : keyboardActive
+                ? t('拒絕變更 (Ctrl+Backspace)', 'Reject change (Ctrl+Backspace)')
+                : t('拒絕變更', 'Reject change')
+          }
           className="text-muted-foreground hover:text-destructive"
         >
           <X className="h-3 w-3" />
-          拒絕
+          {t('拒絕', 'Reject')}
         </Button>
       </div>
     </div>

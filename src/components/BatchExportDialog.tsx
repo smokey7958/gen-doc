@@ -37,6 +37,7 @@ import { Button } from './ui/button';
 import { cn } from '../lib/utils';
 import type { Tab } from '../types/tab';
 import type { TabType } from '../types/manifest';
+import { useT } from '../lib/i18n';
 
 const TYPE_ICON: Record<TabType, React.ComponentType<{ className?: string }>> = {
   markdown: FileCode2,
@@ -93,21 +94,25 @@ export function BatchExportDialog({
    * uses (App.tsx handleExportTab line ~730). Markdown / HTML always
    * exportable; an empty .md / .html is still a valid file.
    */
+  const t = useT();
   const rows = useMemo(() => {
-    return tabs.map((t) => {
+    return tabs.map((tab) => {
       const canExport =
-        t.type === 'markdown' || t.type === 'html' || t.data.byteLength > 0;
+        tab.type === 'markdown' || tab.type === 'html' || tab.data.byteLength > 0;
       return {
-        id: t.id,
-        name: t.name,
-        type: t.type,
+        id: tab.id,
+        name: tab.name,
+        type: tab.type,
         canExport,
         disabledReason: canExport
           ? null
-          : '這個頁籤還沒有內容，先在編輯器中輸入再匯出',
+          : t(
+              '這個頁籤還沒有內容，先在編輯器中輸入再匯出',
+              "This tab is empty — add content in the editor before exporting",
+            ),
       };
     });
-  }, [tabs]);
+  }, [tabs, t]);
 
   // Default: every exportable tab checked, ONLY at the moment the dialog
   // opens. Once open, mutations to the `rows` reference (driven by every
@@ -201,17 +206,18 @@ export function BatchExportDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>批次匯出頁籤</DialogTitle>
+          <DialogTitle>{t('批次匯出頁籤', 'Batch Export Tabs')}</DialogTitle>
           <DialogDescription>
-            勾選要匯出的頁籤，下一步會請你選擇目標資料夾；每個頁籤會以原始格式（.md /
-            .html / .docx / .xlsx / .pptx）寫入該資料夾，遇到重名會自動加上 (2)、
-            (3) 後綴。
+            {t(
+              '勾選要匯出的頁籤，下一步會請你選擇目標資料夾；每個頁籤會以原始格式（.md / .html / .docx / .xlsx / .pptx）寫入該資料夾，遇到重名會自動加上 (2)、(3) 後綴。',
+              'Check the tabs you want to export. Next, pick a destination folder; each tab is written in its native format (.md / .html / .docx / .xlsx / .pptx) into that folder. Name collisions are resolved automatically with (2), (3) suffixes.',
+            )}
           </DialogDescription>
         </DialogHeader>
 
         {rows.length === 0 ? (
           <div className="text-sm text-muted-foreground py-4 text-center">
-            目前沒有任何頁籤可以匯出
+            {t('目前沒有任何頁籤可以匯出', 'No tabs available to export')}
           </div>
         ) : (
           <>
@@ -226,14 +232,17 @@ export function BatchExportDialog({
                 }}
                 onChange={toggleAll}
                 className="h-3.5 w-3.5"
-                aria-label={allSelected ? '取消全選' : '全選'}
+                aria-label={allSelected ? t('取消全選', 'Deselect All') : t('全選', 'Select All')}
               />
               <span className="text-xs text-muted-foreground">
                 {allSelected
-                  ? '取消全選'
+                  ? t('取消全選', 'Deselect All')
                   : someSelected
-                    ? `已選 ${selected.size} / ${eligibleCount} 個`
-                    : '全選'}
+                    ? t(
+                        `已選 ${selected.size} / ${eligibleCount} 個`,
+                        `${selected.size} of ${eligibleCount} selected`,
+                      )
+                    : t('全選', 'Select All')}
               </span>
             </label>
             <ul className="max-h-[320px] overflow-y-auto space-y-0.5">
@@ -275,8 +284,8 @@ export function BatchExportDialog({
         <div className="flex items-center justify-between pt-2">
           <span className="text-xs text-muted-foreground">
             {selected.size > 0
-              ? `將匯出 ${selected.size} 個檔案`
-              : '請至少勾選一個頁籤'}
+              ? t(`將匯出 ${selected.size} 個檔案`, `Will export ${selected.size} file${selected.size === 1 ? '' : 's'}`)
+              : t('請至少勾選一個頁籤', 'Select at least one tab')}
           </span>
           <div className="flex items-center gap-2">
             <Button
@@ -284,7 +293,7 @@ export function BatchExportDialog({
               size="sm"
               onClick={() => onOpenChange(false)}
             >
-              取消
+              {t('取消', 'Cancel')}
             </Button>
             <Button
               size="sm"
@@ -292,12 +301,12 @@ export function BatchExportDialog({
               onClick={confirm}
               title={
                 selected.size === 0
-                  ? '請至少勾選一個頁籤'
-                  : `匯出 ${selected.size} 個檔案`
+                  ? t('請至少勾選一個頁籤', 'Select at least one tab')
+                  : t(`匯出 ${selected.size} 個檔案`, `Export ${selected.size} file${selected.size === 1 ? '' : 's'}`)
               }
             >
               <Folder className="h-3.5 w-3.5" />
-              選擇資料夾並匯出
+              {t('選擇資料夾並匯出', 'Pick folder & export')}
             </Button>
           </div>
         </div>

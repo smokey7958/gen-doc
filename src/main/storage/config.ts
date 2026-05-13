@@ -32,6 +32,9 @@ const DEFAULTS: UserConfig = {
   keymapOverrides: {},
   windowBounds: null,
   autoOpenLastWorkspace: true,
+  // R405 — null means「follow OS locale」; renderer resolves to 'zh' / 'en' at
+  // boot via app.getOsLocale(). See lib/i18n.ts for the resolution rules.
+  locale: null,
 };
 
 let cached: UserConfig | null = null;

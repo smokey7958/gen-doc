@@ -77,6 +77,7 @@ import { useUndoableState, useUndoShortcuts } from '../lib/use-undoable-state';
 import { registerEditorFlush } from '../lib/editor-flush';
 import { FindReplaceDialog, type SearchSegment } from './FindReplaceDialog';
 import { GoToDialog } from './GoToDialog';
+import { useT, tImp } from '../lib/i18n';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -128,6 +129,7 @@ const navScrollMemory = new Map<string, number>();
 const railScrollMemory = new Map<string, number>();
 
 export function PptxEditor({ tab }: Props): JSX.Element {
+  const t = useT();
   const patchTab = useWorkspace((s) => s.patchTab);
   const markTabDirty = useWorkspace((s) => s.markTabDirty);
   const initialBytesRef = useRef<Uint8Array>(tab.data);
@@ -626,7 +628,7 @@ export function PptxEditor({ tab }: Props): JSX.Element {
           (cur) => (cur > idx ? cur - 1 : cur === idx ? Math.max(0, idx - 1) : cur),
         );
       } catch (err) {
-        notify(`刪除投影片失敗：${(err as Error).message}`, 'error');
+        notify(tImp(`刪除投影片失敗：${(err as Error).message}`, `Failed to delete slide: ${(err as Error).message}`), 'error');
       }
     })();
   };
@@ -677,7 +679,7 @@ export function PptxEditor({ tab }: Props): JSX.Element {
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      notify(`插入圖片失敗：${msg}`, 'error');
+      notify(tImp(`插入圖片失敗：${msg}`, `Failed to insert image: ${msg}`), 'error');
     }
   };
 
@@ -712,7 +714,7 @@ export function PptxEditor({ tab }: Props): JSX.Element {
           () => activeIdx,
         );
       } catch (err) {
-        notify(`套用版面失敗：${(err as Error).message}`, 'error');
+        notify(tImp(`套用版面失敗：${(err as Error).message}`, `Failed to apply layout: ${(err as Error).message}`), 'error');
       }
     })();
   };
@@ -733,7 +735,7 @@ export function PptxEditor({ tab }: Props): JSX.Element {
           () => activeIdx,
         );
       } catch (err) {
-        notify(`刪除文字框失敗：${(err as Error).message}`, 'error');
+        notify(tImp(`刪除文字框失敗：${(err as Error).message}`, `Failed to delete text box: ${(err as Error).message}`), 'error');
       }
     })();
   };
@@ -980,7 +982,7 @@ export function PptxEditor({ tab }: Props): JSX.Element {
       }
       if (sawNonImageFile) {
         e.preventDefault();
-        notify('只能貼上圖片檔案', 'warning');
+        notify(tImp('只能貼上圖片檔案', 'Only image files can be pasted'), 'warning');
       }
     };
     root.addEventListener('paste', onPaste);
@@ -1024,7 +1026,7 @@ export function PptxEditor({ tab }: Props): JSX.Element {
     return (
       <div className="h-full w-full flex flex-col items-center justify-center text-muted-foreground gap-3 p-8 text-center">
         <Presentation className="h-12 w-12" />
-        <div className="text-sm">這個 pptx 頁籤還是空的。</div>
+        <div className="text-sm">{t('這個 pptx 頁籤還是空的。', 'This pptx tab is still empty.')}</div>
         <div className="text-xs max-w-md">
           MVP 的 pptx 編輯需要從既有 .pptx 檔開始（會保留 layout / 圖片 / 樣式）。
           請從「檔案 → 開啟」載入已有的 pptx，或先用 Markdown 頁籤編寫內容、之後再匯出。
@@ -1135,7 +1137,7 @@ export function PptxEditor({ tab }: Props): JSX.Element {
           // drop target → overlay flashed → drop with non-image silently
           // dismissed the overlay with no toast. MarkdownEditor.tsx:628
           // carries the same one-liner.
-          notify('只能拖入圖片檔案', 'warning');
+          notify(tImp('只能拖入圖片檔案', 'Only image files can be dropped'), 'warning');
           return;
         }
         // Drop precision (Round 75): convert the drop point's pixel coords
@@ -1225,14 +1227,14 @@ export function PptxEditor({ tab }: Props): JSX.Element {
             segments={findSegments}
             onUpdateSegment={applyFindReplace}
             onLocateSegment={locateFindResult}
-            title="尋找與取代 · 全部投影片"
+            title={t('尋找與取代 · 全部投影片', 'Find & Replace · All Slides')}
           />
           <GoToDialog
             open={gotoOpen}
             focusNonce={gotoFocusNonce}
             onClose={() => setGotoOpen(false)}
             max={model.slides.length}
-            label="跳到第幾張投影片？"
+            label={t('跳到第幾張投影片？', 'Go to which slide?')}
             onJump={(oneBased) => {
               setActiveIdx(oneBased - 1);
               setActiveRunId(null);
@@ -1281,10 +1283,13 @@ export function PptxEditor({ tab }: Props): JSX.Element {
                 // discoverability gap without spawning a new UI element. Same
                 // pattern as R47 (GoToDialog Enter on its primary button) and
                 // R54 (outline pane ↑/↓/Home/End on its header).
-                title="跳至投影片… (Ctrl+G) · 切換上/下一張 (Ctrl+PgUp / Ctrl+PgDn)"
+                title={t('跳至投影片… (Ctrl+G) · 切換上/下一張 (Ctrl+PgUp / Ctrl+PgDn)', 'Go to slide… (Ctrl+G) · Prev/Next (Ctrl+PgUp / Ctrl+PgDn)')}
                 className="text-xs text-muted-foreground hover:text-foreground hover:bg-secondary px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-colors"
               >
-                第 {active.index + 1} / {model.slides.length} 張投影片 · {active.runs.length} 個文字框
+                {t(
+                  `第 ${active.index + 1} / ${model.slides.length} 張投影片 · ${active.runs.length} 個文字框`,
+                  `Slide ${active.index + 1} / ${model.slides.length} · ${active.runs.length} text box${active.runs.length === 1 ? '' : 'es'}`,
+                )}
               </button>
               <div className="flex items-center gap-1.5">
                 {/* Alignment palette — Adobe AI/ID/PowerPoint standard six-
@@ -1332,10 +1337,10 @@ export function PptxEditor({ tab }: Props): JSX.Element {
                   // the 2-way state-aware shape that Doc/Excel needed).
                   // Format list stays in trailing parens to preserve
                   // R100's "additions append in one place" property.
-                  title="插入圖片到目前投影片(PNG / JPG / GIF / SVG / WebP / BMP)"
+                  title={t('插入圖片到目前投影片(PNG / JPG / GIF / SVG / WebP / BMP)', 'Insert image into current slide (PNG / JPG / GIF / SVG / WebP / BMP)')}
                 >
                   <ImageIcon className="h-3 w-3" />
-                  插入圖片
+                  {t('插入圖片', 'Insert image')}
                 </button>
                 {/* R112 — lone same-row holdout after R107/R108/R109
                     polished the other three buttons. Two converging gaps
@@ -1376,10 +1381,10 @@ export function PptxEditor({ tab }: Props): JSX.Element {
                   type="button"
                   onClick={handleAddTextBox}
                   className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-border hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
-                  title="新增文字框到目前投影片（預設文字：新文字框）"
+                  title={t('新增文字框到目前投影片（預設文字：新文字框）', 'Add text box to current slide (default text: New text box)')}
                 >
                   <Plus className="h-3 w-3" />
-                  新增文字框
+                  {t('新增文字框', 'Add text box')}
                 </button>
               </div>
             </div>
@@ -1425,11 +1430,15 @@ export function PptxEditor({ tab }: Props): JSX.Element {
 }
 
 function Banner(): JSX.Element {
+  const t = useT();
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-100 border-b border-amber-300 text-amber-800">
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
       <span>
-        PowerPoint MVP 編輯：可改文字框 + 粗體 / 斜體 / 字色 / 字級；左側可新增 / 複製 / 刪除 / 上下移動投影片。新增 pptx 會自動帶一張預設投影片。
+        {t(
+          'PowerPoint MVP 編輯：可改文字框 + 粗體 / 斜體 / 字色 / 字級；左側可新增 / 複製 / 刪除 / 上下移動投影片。新增 pptx 會自動帶一張預設投影片。',
+          'PowerPoint MVP editor: edit text boxes + bold / italic / color / font size; add / duplicate / delete / reorder slides in the side panel. New pptx files start with one default slide.',
+        )}
       </span>
     </div>
   );
@@ -1461,8 +1470,10 @@ function FormatToolbar({
   onPresent: () => void;
   onOpenFind: () => void;
 }): JSX.Element {
+  const t = useT();
   const disabled = !run;
   const style = run?.style ?? {};
+  const tDisabled = t('請先點選一個文字框', 'Select a text box first');
   return (
     <div className={cn('flex items-center gap-0.5 px-2 py-1 border-b bg-secondary/30')}>
       {/* Outline toggle — first item, mirrors DocxEditor. NOT disabled when
@@ -1472,7 +1483,7 @@ function FormatToolbar({
           each control manage its own disabled visual. */}
       <ToolbarBtn
         active={navOpen}
-        title={navOpen ? '隱藏投影片大綱' : '顯示投影片大綱'}
+        title={navOpen ? t('隱藏投影片大綱', 'Hide slide outline') : t('顯示投影片大綱', 'Show slide outline')}
         onClick={onToggleNav}
       >
         <List className="h-3.5 w-3.5" />
@@ -1490,13 +1501,13 @@ function FormatToolbar({
           ('點選一個文字框以開始編輯'), keeping the disabled-state vocabulary
           consistent within this toolbar. Pairs with R87 (DocxEditor) and the
           XlsxEditor R92 sibling. */}
-      <ToolbarBtn active={!!style.bold} disabled={disabled} title={disabled ? '請先點選一個文字框' : '粗體 (Ctrl+B)'} onClick={() => onToggleStyle('bold')}>
+      <ToolbarBtn active={!!style.bold} disabled={disabled} title={disabled ? tDisabled : t('粗體 (Ctrl+B)', 'Bold (Ctrl+B)')} onClick={() => onToggleStyle('bold')}>
         <Bold className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={!!style.italic} disabled={disabled} title={disabled ? '請先點選一個文字框' : '斜體 (Ctrl+I)'} onClick={() => onToggleStyle('italic')}>
+      <ToolbarBtn active={!!style.italic} disabled={disabled} title={disabled ? tDisabled : t('斜體 (Ctrl+I)', 'Italic (Ctrl+I)')} onClick={() => onToggleStyle('italic')}>
         <Italic className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={!!style.underline} disabled={disabled} title={disabled ? '請先點選一個文字框' : '底線 (Ctrl+U)'} onClick={() => onToggleStyle('underline')}>
+      <ToolbarBtn active={!!style.underline} disabled={disabled} title={disabled ? tDisabled : t('底線 (Ctrl+U)', 'Underline (Ctrl+U)')} onClick={() => onToggleStyle('underline')}>
         <Underline className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <Divider />
@@ -1514,7 +1525,7 @@ function FormatToolbar({
           state vocabulary identical across the whole toolbar. */}
       <span className="relative inline-flex items-center">
         <label
-          title={disabled ? '請先點選一個文字框' : '文字顏色'}
+          title={disabled ? tDisabled : t('文字顏色', 'Text color')}
           // Preserve current run selection — the label was eating mousedown
           // and clearing the active run before the picker change fired.
           onMouseDown={(e) => e.preventDefault()}
@@ -1542,7 +1553,7 @@ function FormatToolbar({
         {style.color ? (
           <button
             type="button"
-            title={disabled ? '請先點選一個文字框' : '清除文字顏色'}
+            title={disabled ? tDisabled : t('清除文字顏色', 'Clear text color')}
             onMouseDown={(e) => e.preventDefault()}
             onClick={onClearColor}
             disabled={disabled}
@@ -1564,10 +1575,10 @@ function FormatToolbar({
           'h-7 text-xs rounded border border-border bg-background px-1.5 ml-1 max-w-[170px]',
           disabled && 'cursor-not-allowed',
         )}
-        title={disabled ? '請先點選一個文字框' : '字型'}
+        title={disabled ? tDisabled : t('字型', 'Font')}
         style={style.fontFamily ? { fontFamily: style.fontFamily } : undefined}
       >
-        <option value="">預設字型</option>
+        <option value="">{t('預設字型', 'Default font')}</option>
         {FONT_FAMILIES.map((f) => (
           <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>
             {f.label}
@@ -1586,15 +1597,15 @@ function FormatToolbar({
           'h-7 text-xs rounded border border-border bg-background px-1.5',
           disabled && 'cursor-not-allowed',
         )}
-        title={disabled ? '請先點選一個文字框' : '字級 (pt)'}
+        title={disabled ? tDisabled : t('字級 (pt)', 'Font size (pt)')}
       >
-        <option value="">預設</option>
+        <option value="">{t('預設', 'Default')}</option>
         {FONT_SIZES_PT.map((s) => (
           <option key={s} value={s}>{s} pt</option>
         ))}
       </select>
       <span className="ml-2 text-[11px] text-muted-foreground whitespace-nowrap">
-        {run ? `已選：第 ${run.runIndex + 1} 個文字框` : '點選一個文字框以開始編輯'}
+        {run ? t(`已選：第 ${run.runIndex + 1} 個文字框`, `Selected: text box ${run.runIndex + 1}`) : t('點選一個文字框以開始編輯', 'Click a text box to start editing')}
       </span>
       </div>
       <div className="ml-auto" />
@@ -1603,14 +1614,14 @@ function FormatToolbar({
           for parity with DocxEditor / MarkdownEditor. Stays enabled even
           without a focused run: searching across all slides is meaningful
           regardless of which text box (if any) currently has the caret. */}
-      <ToolbarBtn disabled={false} title="尋找與取代 (Ctrl+F)" onClick={onOpenFind}>
+      <ToolbarBtn disabled={false} title={tImp('尋找與取代 (Ctrl+F)', 'Find & Replace (Ctrl+F)')} onClick={onOpenFind}>
         <Search className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <Divider />
       <button
         type="button"
         onClick={onPresent}
-        title="開始放映 (F5)"
+        title={tImp('開始放映 (F5)', 'Start slideshow (F5)')}
         className="h-7 inline-flex items-center gap-1 px-2 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
       >
         <Play className="h-3.5 w-3.5" />
@@ -2397,7 +2408,7 @@ function ShapeFrame({
         <button
           type="button"
           onPointerDown={startDrag}
-          title="拖曳移動 · Shift 鎖軸 · Alt 拖曳複製"
+          title={tImp('拖曳移動 · Shift 鎖軸 · Alt 拖曳複製', 'Drag to move · Shift to lock axis · Alt-drag to duplicate')}
           tabIndex={-1}
           className={cn(
             'absolute -top-2 -left-2 h-5 w-5 inline-flex items-center justify-center rounded-full',
@@ -2419,7 +2430,7 @@ function ShapeFrame({
             e.stopPropagation();
             onRunDelete(runs[0].runIndex);
           }}
-          title="刪除此文字框"
+          title={tImp('刪除此文字框', 'Delete this text box')}
           tabIndex={-1}
           className={cn(
             'absolute -top-2 -right-2 h-5 w-5 inline-flex items-center justify-center rounded-full',
@@ -2601,23 +2612,23 @@ function AlignmentPalette({
   // multi-select-relative variants come once we add marquee selection).
   return (
     <div className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded border border-border">
-      <AlignBtn title="對齊投影片左緣" onClick={() => onAlign('left')}>
+      <AlignBtn title={tImp('對齊投影片左緣', 'Align to slide left edge')} onClick={() => onAlign('left')}>
         <AlignLeft className="h-3.5 w-3.5" />
       </AlignBtn>
-      <AlignBtn title="水平置中於投影片" onClick={() => onAlign('hcenter')}>
+      <AlignBtn title={tImp('水平置中於投影片', 'Center horizontally on slide')} onClick={() => onAlign('hcenter')}>
         <AlignCenter className="h-3.5 w-3.5" />
       </AlignBtn>
-      <AlignBtn title="對齊投影片右緣" onClick={() => onAlign('right')}>
+      <AlignBtn title={tImp('對齊投影片右緣', 'Align to slide right edge')} onClick={() => onAlign('right')}>
         <AlignRight className="h-3.5 w-3.5" />
       </AlignBtn>
       <div className="w-px h-4 bg-border mx-0.5" />
-      <AlignBtn title="對齊投影片頂端" onClick={() => onAlign('top')}>
+      <AlignBtn title={tImp('對齊投影片頂端', 'Align to slide top')} onClick={() => onAlign('top')}>
         <AlignStartHorizontal className="h-3.5 w-3.5" />
       </AlignBtn>
-      <AlignBtn title="垂直置中於投影片" onClick={() => onAlign('vmiddle')}>
+      <AlignBtn title={tImp('垂直置中於投影片', 'Center vertically on slide')} onClick={() => onAlign('vmiddle')}>
         <AlignCenterVertical className="h-3.5 w-3.5" />
       </AlignBtn>
-      <AlignBtn title="對齊投影片底端" onClick={() => onAlign('bottom')}>
+      <AlignBtn title={tImp('對齊投影片底端', 'Align to slide bottom')} onClick={() => onAlign('bottom')}>
         <AlignEndHorizontal className="h-3.5 w-3.5" />
       </AlignBtn>
     </div>
@@ -2692,7 +2703,7 @@ function ShapePicker({ onAdd }: { onAdd: (kind: PptxShapeKind) => void }): JSX.E
           // so future shape additions only need to be appended in one
           // place mentally — same property R100 protected for the
           // image format list.
-          title="新增圖形到目前投影片 — 點擊選擇形狀 (矩形 / 圓角矩形 / 橢圓 / 三角形 / 右箭頭)"
+          title={tImp('新增圖形到目前投影片 — 點擊選擇形狀 (矩形 / 圓角矩形 / 橢圓 / 三角形 / 右箭頭)', 'Add shape to current slide — click to pick (rectangle / rounded rect / ellipse / triangle / right arrow)')}
         >
           <Shapes className="h-3 w-3" />
           新增圖形
@@ -2796,7 +2807,7 @@ function LayoutPicker({ onApply }: { onApply: (id: PptxLayoutId) => void }): JSX
         <button
           type="button"
           className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-border hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
-          title="套用版面配置到目前投影片 — 點擊選擇配置 (標題投影片 / 標題與內容 / 兩欄內容 / 章節標題 / 僅標題 / 空白) · 會清除目前投影片的文字框內容"
+          title={tImp('套用版面配置到目前投影片 — 點擊選擇配置 (標題投影片 / 標題與內容 / 兩欄內容 / 章節標題 / 僅標題 / 空白) · 會清除目前投影片的文字框內容', 'Apply layout to current slide — click to pick (Title slide / Title + Content / Two-column / Section header / Title only / Blank) · clears existing text boxes on this slide')}
         >
           <LayoutTemplate className="h-3 w-3" />
           版面配置
@@ -2821,6 +2832,7 @@ function NotesEditor({
   value: string;
   onChange: (t: string) => void;
 }): JSX.Element {
+  const t = useT();
   // Local mirror so typing doesn't fight the debounced re-serialize.
   const [local, setLocal] = useState(value);
   useEffect(() => {
@@ -2828,7 +2840,7 @@ function NotesEditor({
   }, [value]);
   return (
     <div className="pt-3 mt-3 border-t border-border">
-      <div className="text-xs text-muted-foreground mb-1">備忘稿（speaker notes，僅在放映模式可見）</div>
+      <div className="text-xs text-muted-foreground mb-1">{t('備忘稿（speaker notes，僅在放映模式可見）', 'Presenter notes (speaker notes, visible only in slideshow mode)')}</div>
       <textarea
         value={local}
         onChange={(e) => {
@@ -2836,7 +2848,7 @@ function NotesEditor({
           onChange(e.target.value);
         }}
         rows={4}
-        placeholder="在這裡寫下這張投影片的備忘稿…"
+        placeholder={t('在這裡寫下這張投影片的備忘稿…', 'Write notes for this slide here…')}
         // R156 — explicit accessible name. The visible「備忘稿（speaker
         // notes，僅在放映模式可見）」label at line 2611 sits above the
         // textarea but isn't programmatically associated (it's a `<div>`,
@@ -2844,7 +2856,7 @@ function NotesEditor({
         // The shorter「備忘稿」 stays anchored when placeholder vanishes
         // on input — same rationale as R155's FindReplaceDialog inputs and
         // R156's AIPanel / XlsxEditor inputs.
-        aria-label="備忘稿"
+        aria-label={tImp('備忘稿', 'Presenter notes')}
         className="w-full bg-secondary/20 border border-border rounded px-3 py-2 text-sm outline-none resize-y focus:ring-1 focus:ring-primary"
       />
     </div>
@@ -2971,7 +2983,7 @@ function PresentationMode({
               onClose();
             }}
             className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10"
-            title="結束放映 (Esc)"
+            title={tImp('結束放映 (Esc)', 'End slideshow (Esc)')}
           >
             <X className="h-3.5 w-3.5" />
             結束
@@ -2986,15 +2998,15 @@ function PresentationMode({
             // visual hand-off says "the deck is over" without yanking the
             // audience back into edit-mode UI mid-room.
             <div className="text-center select-none">
-              <div className="text-3xl font-medium tracking-wide">簡報結束</div>
+              <div className="text-3xl font-medium tracking-wide">{tImp('簡報結束', 'End of presentation')}</div>
               <div className="mt-3 text-sm text-white/60">
-                按任意鍵 / 點擊離開 · ← / PageUp 返回最後一張
+                {tImp('按任意鍵 / 點擊離開 · ← / PageUp 返回最後一張', 'Press any key / click to exit · ← / PageUp to return to the last slide')}
               </div>
             </div>
           ) : (
             <div className="w-full max-w-4xl aspect-[16/9] bg-white text-black rounded shadow-2xl p-10 overflow-auto flex flex-col gap-4">
               {slide.runs.length === 0 ? (
-                <div className="text-gray-400 italic m-auto">（這張投影片沒有文字）</div>
+                <div className="text-gray-400 italic m-auto">{tImp('（這張投影片沒有文字）', '(This slide has no text)')}</div>
               ) : (
                 slide.runs.map((run) => {
                   const st = run.style ?? {};
@@ -3039,11 +3051,11 @@ function PresentationMode({
           // notes-less territory keeps the pane reserved so the layout doesn't
           // jump between slides; closing reflects the same intent everywhere.
           <div className="w-80 shrink-0 border-l border-white/10 bg-black/80 p-4 overflow-auto">
-            <div className="text-[11px] uppercase tracking-wider text-white/50 mb-2">備忘稿</div>
+            <div className="text-[11px] uppercase tracking-wider text-white/50 mb-2">{tImp('備忘稿', 'Notes')}</div>
             {slide.notesText ? (
               <div className="text-sm whitespace-pre-wrap text-white/90">{slide.notesText}</div>
             ) : (
-              <div className="text-sm italic text-white/40">（這張投影片沒有備忘稿）</div>
+              <div className="text-sm italic text-white/40">{tImp('（這張投影片沒有備忘稿）', '(This slide has no notes)')}</div>
             )}
           </div>
         ) : null}
@@ -3404,7 +3416,7 @@ function SlideRail({
                   >
                     <ChevronDown className="h-3 w-3" />
                   </RailIconBtn>
-                  <RailIconBtn title="複製此投影片" onClick={() => onDuplicate(i)}>
+                  <RailIconBtn title={tImp('複製此投影片', 'Duplicate this slide')} onClick={() => onDuplicate(i)}>
                     <Copy className="h-3 w-3" />
                   </RailIconBtn>
                   {/* Destination disclosure on the enabled-state tooltip:
@@ -3457,7 +3469,7 @@ function SlideRail({
         type="button"
         onClick={() => onDuplicate(activeIdx)}
         className="text-xs px-2 py-2 border-t border-border hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
-        title="在目前投影片之後新增一張（複製目前投影片的內容）"
+        title={tImp('在目前投影片之後新增一張（複製目前投影片的內容）', 'Add a new slide after the current one (copies current slide content)')}
       >
         + 新增（複製目前頁）
       </button>
@@ -3724,7 +3736,7 @@ function PptxNavPanel({
           consistency is preserved. */}
       <div
         className="px-3 py-2 text-[10px] uppercase tracking-wider text-muted-foreground font-medium border-b"
-        title="↑/↓ 切換 · Home/End 跳到首/末"
+        title={tImp('↑/↓ 切換 · Home/End 跳到首/末', '↑/↓ to switch · Home/End to jump to first/last')}
       >
         投影片大綱
       </div>

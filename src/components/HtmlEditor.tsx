@@ -26,6 +26,7 @@ import { Code, Columns2, Eye } from 'lucide-react';
 import type { HtmlTab } from '../types/tab';
 import { useWorkspace } from '../store/workspace';
 import { cn, slicePreview } from '../lib/utils';
+import { useT } from '../lib/i18n';
 
 type HtmlViewMode = 'source' | 'split' | 'preview';
 
@@ -243,13 +244,14 @@ interface ToolbarProps {
 }
 
 function HtmlToolbar({ viewMode, onViewModeChange }: ToolbarProps): JSX.Element {
+  const t = useT();
   const modes = useMemo<Array<{ mode: HtmlViewMode; label: string; Icon: React.ComponentType<{ className?: string }>; title: string }>>(
     () => [
-      { mode: 'source', label: '原始碼', Icon: Code, title: '只看原始碼（Code mode）' },
-      { mode: 'split', label: '對照', Icon: Columns2, title: '左右對照（原始碼 + 預覽）' },
-      { mode: 'preview', label: '預覽', Icon: Eye, title: '只看預覽（成品檢視）' },
+      { mode: 'source', label: t('原始碼', 'Source'), Icon: Code, title: t('只看原始碼（Code mode）', 'Source only (Code mode)') },
+      { mode: 'split', label: t('對照', 'Split'), Icon: Columns2, title: t('左右對照（原始碼 + 預覽）', 'Side-by-side (source + preview)') },
+      { mode: 'preview', label: t('預覽', 'Preview'), Icon: Eye, title: t('只看預覽（成品檢視）', 'Preview only (final view)') },
     ],
-    [],
+    [t],
   );
   return (
     <div className="flex items-center gap-1 px-2 py-1 border-b bg-background/80">

@@ -81,6 +81,7 @@ import { FONT_FAMILIES, withEmojiFallback } from '../lib/font-families';
 import { useFormatShortcuts } from '../lib/use-format-shortcuts';
 import { registerEditorFlush } from '../lib/editor-flush';
 import { useUndoableState, useUndoShortcuts } from '../lib/use-undoable-state';
+import { useT, tImp } from '../lib/i18n';
 import { FindReplaceDialog, type SearchSegment } from './FindReplaceDialog';
 import { notify } from '../store/toast';
 
@@ -637,7 +638,7 @@ export function XlsxEditor({ tab }: Props): JSX.Element {
       undoApi.resetHistory(recomputed);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      notify(`解析 xlsx 失敗：${msg}`, 'error');
+      notify(tImp(`解析 xlsx 失敗：${msg}`, `Failed to parse xlsx: ${msg}`), 'error');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.data]);
@@ -818,7 +819,7 @@ export function XlsxEditor({ tab }: Props): JSX.Element {
         next.scrollLeft = target.scrollLeft;
       });
       } catch (err) {
-        notify(`刪除工作表失敗：${(err as Error).message}`, 'error');
+        notify(tImp(`刪除工作表失敗：${(err as Error).message}`, `Failed to delete sheet: ${(err as Error).message}`), 'error');
       }
     })();
   };
@@ -993,7 +994,7 @@ export function XlsxEditor({ tab }: Props): JSX.Element {
       buf = new Uint8Array(await file.arrayBuffer());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      notify(`插入圖片失敗：${msg}`, 'error');
+      notify(tImp(`插入圖片失敗：${msg}`, `Failed to insert image: ${msg}`), 'error');
       return;
     }
     const dataUrl = `data:${mime};base64,${uint8ToBase64(buf)}`;
@@ -1722,10 +1723,11 @@ function StatusBar({
   sheet: XlsxSheet;
   addr: string | null;
 }): JSX.Element {
+  const t = useT();
   if (!selection) {
     return (
       <div className="flex items-center justify-end gap-4 px-3 py-1 border-t bg-secondary/30 text-xs text-muted-foreground">
-        <span>未選取</span>
+        <span>{t('未選取', 'No selection')}</span>
       </div>
     );
   }
@@ -1744,10 +1746,10 @@ function StatusBar({
       {stats.numericCount > 0 ? (
         <>
           <span>
-            加總: <span className="font-mono text-foreground">{formatNum(stats.sum)}</span>
+            {t('加總', 'Sum')}: <span className="font-mono text-foreground">{formatNum(stats.sum)}</span>
           </span>
           <span>
-            平均:{' '}
+            {t('平均', 'Avg')}:{' '}
             <span className="font-mono text-foreground">
               {formatNum(stats.sum / stats.numericCount)}
             </span>
@@ -1755,11 +1757,11 @@ function StatusBar({
         </>
       ) : null}
       <span>
-        計數: <span className="font-mono text-foreground">{stats.count}</span>
+        {t('計數', 'Count')}: <span className="font-mono text-foreground">{stats.count}</span>
       </span>
       {stats.cellCount > 1 ? (
         <span>
-          儲存格: <span className="font-mono text-foreground">{stats.cellCount}</span>
+          {t('儲存格', 'Cells')}: <span className="font-mono text-foreground">{stats.cellCount}</span>
         </span>
       ) : null}
     </div>
@@ -1767,11 +1769,15 @@ function StatusBar({
 }
 
 function Banner(): JSX.Element {
+  const t = useT();
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-100 border-b border-amber-300 text-amber-800">
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
       <span>
-        Excel MVP 編輯：cell 文字／數值 round-trip 保留樣式。粗體 / 對齊 / 顏色寫入 styles.xml；重新開啟後 toolbar 顯示可能不全。
+        {t(
+          'Excel MVP 編輯：cell 文字／數值 round-trip 保留樣式。粗體 / 對齊 / 顏色寫入 styles.xml；重新開啟後 toolbar 顯示可能不全。',
+          'Excel MVP editor: cell text/values round-trip with styles preserved. Bold / alignment / color write to styles.xml; toolbar display may be incomplete after reopening.',
+        )}
       </span>
     </div>
   );
@@ -1819,7 +1825,7 @@ function ImagePanel({
               type="button"
               onClick={() => onJump(img.anchorRow, img.anchorCol)}
               className="text-[11px] font-mono text-foreground hover:underline"
-              title="跳至錨點儲存格"
+              title={tImp('跳至錨點儲存格', 'Jump to anchor cell')}
             >
               {addr}
             </button>
@@ -1852,7 +1858,7 @@ function ImagePanel({
               type="button"
               onClick={() => onRemove(img.id)}
               className="h-5 w-5 inline-flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-              title="刪除圖片"
+              title={tImp('刪除圖片', 'Delete image')}
             >
               <X className="h-3 w-3" />
             </button>
@@ -1864,18 +1870,18 @@ function ImagePanel({
 }
 
 /** Common Excel number-format strings. Empty value = "General" (auto). */
-const NUMBER_FORMATS: Array<{ label: string; value: string }> = [
-  { label: '一般', value: '' },
-  { label: '整數 (1234)', value: '0' },
-  { label: '小數 (1234.56)', value: '0.00' },
-  { label: '千分位 (1,234)', value: '#,##0' },
-  { label: '千分位.小數 (1,234.56)', value: '#,##0.00' },
-  { label: '貨幣 NT$', value: '"NT$"#,##0.00' },
-  { label: '貨幣 $', value: '"$"#,##0.00' },
-  { label: '百分比 (12%)', value: '0%' },
-  { label: '百分比.小數 (12.34%)', value: '0.00%' },
-  { label: '日期 yyyy-mm-dd', value: 'yyyy-mm-dd' },
-  { label: '日期時間 yyyy-mm-dd hh:mm', value: 'yyyy-mm-dd hh:mm' },
+const NUMBER_FORMATS: Array<{ labelZh: string; labelEn: string; value: string }> = [
+  { labelZh: '一般', labelEn: 'General', value: '' },
+  { labelZh: '整數 (1234)', labelEn: 'Integer (1234)', value: '0' },
+  { labelZh: '小數 (1234.56)', labelEn: 'Decimal (1234.56)', value: '0.00' },
+  { labelZh: '千分位 (1,234)', labelEn: 'Thousands (1,234)', value: '#,##0' },
+  { labelZh: '千分位.小數 (1,234.56)', labelEn: 'Thousands.Decimal (1,234.56)', value: '#,##0.00' },
+  { labelZh: '貨幣 NT$', labelEn: 'Currency NT$', value: '"NT$"#,##0.00' },
+  { labelZh: '貨幣 $', labelEn: 'Currency $', value: '"$"#,##0.00' },
+  { labelZh: '百分比 (12%)', labelEn: 'Percent (12%)', value: '0%' },
+  { labelZh: '百分比.小數 (12.34%)', labelEn: 'Percent.Decimal (12.34%)', value: '0.00%' },
+  { labelZh: '日期 yyyy-mm-dd', labelEn: 'Date yyyy-mm-dd', value: 'yyyy-mm-dd' },
+  { labelZh: '日期時間 yyyy-mm-dd hh:mm', labelEn: 'DateTime yyyy-mm-dd hh:mm', value: 'yyyy-mm-dd hh:mm' },
 ];
 
 function FormatToolbar({
@@ -1918,8 +1924,10 @@ function FormatToolbar({
   onInsertImage: () => void;
   onOpenFind: () => void;
 }): JSX.Element {
+  const t = useT();
   const style = cell?.style ?? {};
   const disabled = !selectionAddr;
+  const tDisabled = t('請先選取一個儲存格', 'Select a cell first');
 
   const toggle = (key: 'bold' | 'italic' | 'underline') =>
     onUpdate((cur) => normalizeStyle({ ...cur, [key]: !cur?.[key] }));
@@ -1958,23 +1966,23 @@ function FormatToolbar({
           the same Bold/Italic/Underline + align cluster already does this.
           Wording '請先選取一個儲存格' matches the cell-selection vocabulary
           this editor uses elsewhere. */}
-      <ToolbarBtn active={!!style.bold} disabled={disabled} title={disabled ? '請先選取一個儲存格' : '粗體 (Ctrl+B)'} onClick={() => toggle('bold')}>
+      <ToolbarBtn active={!!style.bold} disabled={disabled} title={disabled ? tDisabled : t('粗體 (Ctrl+B)', 'Bold (Ctrl+B)')} onClick={() => toggle('bold')}>
         <Bold className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={!!style.italic} disabled={disabled} title={disabled ? '請先選取一個儲存格' : '斜體 (Ctrl+I)'} onClick={() => toggle('italic')}>
+      <ToolbarBtn active={!!style.italic} disabled={disabled} title={disabled ? tDisabled : t('斜體 (Ctrl+I)', 'Italic (Ctrl+I)')} onClick={() => toggle('italic')}>
         <Italic className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={!!style.underline} disabled={disabled} title={disabled ? '請先選取一個儲存格' : '底線 (Ctrl+U)'} onClick={() => toggle('underline')}>
+      <ToolbarBtn active={!!style.underline} disabled={disabled} title={disabled ? tDisabled : t('底線 (Ctrl+U)', 'Underline (Ctrl+U)')} onClick={() => toggle('underline')}>
         <Underline className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <Divider />
-      <ToolbarBtn active={style.align === 'left'} disabled={disabled} title={disabled ? '請先選取一個儲存格' : '靠左對齊'} onClick={() => setAlign('left')}>
+      <ToolbarBtn active={style.align === 'left'} disabled={disabled} title={disabled ? tDisabled : t('靠左對齊', 'Align left')} onClick={() => setAlign('left')}>
         <AlignLeft className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={style.align === 'center'} disabled={disabled} title={disabled ? '請先選取一個儲存格' : '置中對齊'} onClick={() => setAlign('center')}>
+      <ToolbarBtn active={style.align === 'center'} disabled={disabled} title={disabled ? tDisabled : t('置中對齊', 'Align center')} onClick={() => setAlign('center')}>
         <AlignCenter className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={style.align === 'right'} disabled={disabled} title={disabled ? '請先選取一個儲存格' : '靠右對齊'} onClick={() => setAlign('right')}>
+      <ToolbarBtn active={style.align === 'right'} disabled={disabled} title={disabled ? tDisabled : t('靠右對齊', 'Align right')} onClick={() => setAlign('right')}>
         <AlignRight className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <Divider />
@@ -1988,8 +1996,8 @@ function FormatToolbar({
           to keep the toolbar speaking one voice. */}
       <ColorPickerBtn
         disabled={disabled}
-        title="文字顏色"
-        disabledTitle="請先選取一個儲存格"
+        title={t('文字顏色', 'Text color')}
+        disabledTitle={tDisabled}
         icon={<Type className="h-3.5 w-3.5" />}
         value={style.fontColor}
         onChange={(hex) => setColor('fontColor', hex)}
@@ -1997,8 +2005,8 @@ function FormatToolbar({
       />
       <ColorPickerBtn
         disabled={disabled}
-        title="背景顏色"
-        disabledTitle="請先選取一個儲存格"
+        title={t('背景顏色', 'Background color')}
+        disabledTitle={tDisabled}
         icon={<PaintBucket className="h-3.5 w-3.5" />}
         value={style.bgColor}
         onChange={(hex) => setColor('bgColor', hex)}
@@ -2013,10 +2021,10 @@ function FormatToolbar({
           'h-7 text-xs rounded border border-border bg-background px-1.5 max-w-[170px]',
           disabled && 'cursor-not-allowed',
         )}
-        title={disabled ? '請先選取一個儲存格' : '字型'}
+        title={disabled ? tDisabled : t('字型', 'Font')}
         style={style.fontFamily ? { fontFamily: style.fontFamily } : undefined}
       >
-        <option value="">預設字型</option>
+        <option value="">{t('預設字型', 'Default font')}</option>
         {FONT_FAMILIES.map((f) => (
           <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>
             {f.label}
@@ -2031,11 +2039,11 @@ function FormatToolbar({
           'h-7 text-xs rounded border border-border bg-background px-1.5 max-w-[160px]',
           disabled && 'cursor-not-allowed',
         )}
-        title={disabled ? '請先選取一個儲存格' : '數值格式'}
+        title={disabled ? tDisabled : t('數值格式', 'Number format')}
       >
         {NUMBER_FORMATS.map((f) => (
           <option key={f.value} value={f.value}>
-            {f.label}
+            {t(f.labelZh, f.labelEn)}
           </option>
         ))}
       </select>
@@ -2053,7 +2061,7 @@ function FormatToolbar({
           row never violates an "at-least-1" invariant.) */}
       <ToolbarBtn
         disabled={disabled}
-        title={disabled ? '請先選取一個儲存格' : '在上方插入列'}
+        title={disabled ? tDisabled : t('在上方插入列', 'Insert row above')}
         onClick={onInsertRowAbove}
       >
         <span className="relative inline-flex">
@@ -2063,7 +2071,7 @@ function FormatToolbar({
       </ToolbarBtn>
       <ToolbarBtn
         disabled={disabled}
-        title={disabled ? '請先選取一個儲存格' : '在下方插入列'}
+        title={disabled ? tDisabled : t('在下方插入列', 'Insert row below')}
         onClick={onInsertRowBelow}
       >
         <span className="relative inline-flex">
@@ -2089,10 +2097,10 @@ function FormatToolbar({
         disabled={disabled || !canDeleteRow}
         title={
           disabled
-            ? '請先選取一個儲存格'
+            ? tDisabled
             : !canDeleteRow
-              ? '至少要保留一列'
-              : '刪除此列'
+              ? t('至少要保留一列', 'At least one row must remain')
+              : t('刪除此列', 'Delete this row')
         }
         onClick={onDeleteRow}
       >
@@ -2103,7 +2111,7 @@ function FormatToolbar({
       </ToolbarBtn>
       <ToolbarBtn
         disabled={disabled}
-        title={disabled ? '請先選取一個儲存格' : '在左側插入欄'}
+        title={disabled ? tDisabled : t('在左側插入欄', 'Insert column left')}
         onClick={onInsertColLeft}
       >
         <span className="relative inline-flex">
@@ -2113,7 +2121,7 @@ function FormatToolbar({
       </ToolbarBtn>
       <ToolbarBtn
         disabled={disabled}
-        title={disabled ? '請先選取一個儲存格' : '在右側插入欄'}
+        title={disabled ? tDisabled : t('在右側插入欄', 'Insert column right')}
         onClick={onInsertColRight}
       >
         <span className="relative inline-flex">
@@ -2125,10 +2133,10 @@ function FormatToolbar({
         disabled={disabled || !canDeleteCol}
         title={
           disabled
-            ? '請先選取一個儲存格'
+            ? tDisabled
             : !canDeleteCol
-              ? '至少要保留一欄'
-              : '刪除此欄'
+              ? t('至少要保留一欄', 'At least one column must remain')
+              : t('刪除此欄', 'Delete this column')
         }
         onClick={onDeleteCol}
       >
@@ -2156,10 +2164,10 @@ function FormatToolbar({
         disabled={disabled || !canMerge}
         title={
           disabled
-            ? '請先選取儲存格範圍才能合併'
+            ? t('請先選取儲存格範圍才能合併', 'Select a cell range first to merge')
             : !canMerge
-              ? '請先選取兩個以上的儲存格才能合併'
-              : '合併儲存格（保留左上角內容）'
+              ? t('請先選取兩個以上的儲存格才能合併', 'Select two or more cells first to merge')
+              : t('合併儲存格（保留左上角內容）', 'Merge cells (keep top-left content)')
         }
         onClick={onMerge}
       >
@@ -2169,10 +2177,10 @@ function FormatToolbar({
         disabled={disabled || !canUnmerge}
         title={
           disabled
-            ? '請先選取已合併的儲存格'
+            ? t('請先選取已合併的儲存格', 'Select a merged cell first')
             : !canUnmerge
-              ? '目前選取的範圍沒有合併儲存格'
-              : '取消合併'
+              ? t('目前選取的範圍沒有合併儲存格', 'No merged cells in current selection')
+              : t('取消合併', 'Unmerge')
         }
         onClick={onUnmerge}
       >
@@ -2195,8 +2203,8 @@ function FormatToolbar({
           inline so the tooltip stops lying about the click outcome. */}
       <ToolbarBtn
         title={selectionAddr
-          ? `插入圖片（錨定於 ${selectionAddr}）`
-          : '插入圖片（未選取儲存格時錨定於 A1）'}
+          ? t(`插入圖片（錨定於 ${selectionAddr}）`, `Insert image (anchored at ${selectionAddr})`)
+          : t('插入圖片（未選取儲存格時錨定於 A1）', 'Insert image (anchored at A1 when no cell selected)')}
         onClick={onInsertImage}
       >
         <ImageIcon className="h-3.5 w-3.5" />
@@ -2206,14 +2214,14 @@ function FormatToolbar({
           shortcut is invisible to mouse-first users. Stays enabled even
           without a selection: searching across all sheets is meaningful
           regardless of which (if any) cell currently has focus. */}
-      <ToolbarBtn disabled={false} title="尋找與取代 (Ctrl+F)" onClick={onOpenFind}>
+      <ToolbarBtn disabled={false} title={t('尋找與取代 (Ctrl+F)', 'Find & Replace (Ctrl+F)')} onClick={onOpenFind}>
         <Search className="h-3.5 w-3.5" />
       </ToolbarBtn>
       {/* Selection address pushed to the right edge so toolbar action
           buttons stay anchored regardless of address string length;
           whitespace-nowrap guarantees we don't wrap "Sheet1!A1:C3". */}
       <span className="ml-auto text-[11px] text-muted-foreground font-mono whitespace-nowrap">
-        {selectionAddr ?? '選取一個儲存格以開始編輯'}
+        {selectionAddr ?? t('選取一個儲存格以開始編輯', 'Select a cell to start editing')}
       </span>
     </div>
   );
@@ -2416,12 +2424,12 @@ function FormulaBar({
     }
     const parsed = parseA1(raw);
     if (!parsed) {
-      notify(`無法解析儲存格位址：${raw}`, 'error');
+      notify(tImp(`無法解析儲存格位址：${raw}`, `Cannot parse cell address: ${raw}`), 'error');
       setAddrDraft(addr ?? '');
       return;
     }
     if (parsed.r < 0 || parsed.r >= rowCount || parsed.c < 0 || parsed.c >= colCount) {
-      notify(`位址超出工作表範圍：${raw}`, 'error');
+      notify(tImp(`位址超出工作表範圍：${raw}`, `Address out of sheet range: ${raw}`), 'error');
       setAddrDraft(addr ?? '');
       return;
     }
@@ -2443,14 +2451,14 @@ function FormulaBar({
   // Tooltip text — short, user-facing. Kept terse so it fits a native title=
   // without wrapping awkwardly.
   const errorHints: Record<FormulaErrorCode, string> = {
-    '#DIV/0!': '除以零或空儲存格',
-    '#VALUE!': '參數型別錯誤（例如數字運算遇到文字）',
-    '#REF!': '參照已不存在的儲存格',
-    '#NAME?': '無法識別的函數或名稱',
-    '#N/A': '查無資料',
-    '#NUM!': '數值無效或超出範圍',
-    '#CYCLE!': '公式互相循環參照',
-    '#ERROR!': '公式語法錯誤',
+    '#DIV/0!': tImp('除以零或空儲存格', 'Division by zero or empty cell'),
+    '#VALUE!': tImp('參數型別錯誤（例如數字運算遇到文字）', 'Argument type error (e.g., math on text)'),
+    '#REF!': tImp('參照已不存在的儲存格', 'Reference to a no-longer-existing cell'),
+    '#NAME?': tImp('無法識別的函數或名稱', 'Unrecognised function or name'),
+    '#N/A': tImp('查無資料', 'No data found'),
+    '#NUM!': tImp('數值無效或超出範圍', 'Invalid number or out of range'),
+    '#CYCLE!': tImp('公式互相循環參照', 'Circular formula reference'),
+    '#ERROR!': tImp('公式語法錯誤', 'Formula syntax error'),
   };
   // Escape-to-cancel needs to defeat the input's onBlur — when Escape calls
   // .blur(), onBlur fires synchronously with the closure's still-typed
@@ -2477,7 +2485,7 @@ function FormulaBar({
         // append it as description). The name「Name Box / 儲存格位址」 is
         // Excel-canonical — using the formal Chinese term keeps SR users
         // who know Excel's terminology oriented immediately.
-        aria-label="儲存格位址"
+        aria-label={tImp('儲存格位址', 'Cell address')}
         // Marked so XlsxEditor's Ctrl+G keymap can focus this input via
         // querySelector — Excel's "Go To" (Ctrl+G / F5) historically opens
         // a dedicated dialog, but since the Name Box already accepts the
@@ -2502,7 +2510,7 @@ function FormulaBar({
             (e.target as HTMLInputElement).blur();
           }
         }}
-        title="輸入儲存格位址後按 Enter 跳至（例：B5）。Ctrl+G 可從鍵盤聚焦至此"
+        title={tImp('輸入儲存格位址後按 Enter 跳至（例：B5）。Ctrl+G 可從鍵盤聚焦至此', 'Type a cell address and press Enter to jump (e.g., B5). Ctrl+G focuses here from the keyboard.')}
         placeholder="—"
         className="w-24 shrink-0 px-2 py-1 border-r border-border bg-secondary/50 font-mono text-muted-foreground outline-none focus:bg-background focus:text-foreground focus:ring-1 focus:ring-primary"
       />
@@ -2519,7 +2527,7 @@ function FormulaBar({
         // the Name Box's role nor the fx separator and would tab into a
         // bare edit field. Using the canonical Excel term「資料編輯列」 /
         // formula bar keeps consistency with the addr sibling's naming.
-        aria-label="資料編輯列"
+        aria-label={tImp('資料編輯列', 'Formula bar')}
         onChange={(e) => setValue(e.target.value)}
         onBlur={() => {
           if (cancelRef.current) {
@@ -2544,8 +2552,8 @@ function FormulaBar({
         // revert-on-Esc behaviour is discoverable only by experiment, while
         // the name box right next to it loudly announces the same shortcut —
         // a cross-input inconsistency that makes the bar feel half-finished.
-        title="輸入內容或 = 公式後按 Enter 寫入；按 Esc 取消還原"
-        placeholder={addr ? '輸入內容或 =公式…' : '選一個儲存格'}
+        title={tImp('輸入內容或 = 公式後按 Enter 寫入；按 Esc 取消還原', 'Type a value or = formula and press Enter to commit; press Esc to cancel and revert')}
+        placeholder={addr ? tImp('輸入內容或 =公式…', 'Type a value or =formula…') : tImp('選一個儲存格', 'Select a cell')}
         className={cn(
           'flex-1 px-2 py-1 bg-transparent outline-none font-mono',
           errorCode
@@ -2746,7 +2754,7 @@ function SheetTabs({
                     // app ate their keystrokes.
                     if (trimmed === s.name) return;
                     if (!trimmed) {
-                      notify('工作表名稱不能為空', 'warning');
+                      notify(tImp('工作表名稱不能為空', 'Sheet name cannot be empty'), 'warning');
                       return;
                     }
                     if (sheets.some((other, j) => j !== i && other.name === trimmed)) {
@@ -2758,7 +2766,7 @@ function SheetTabs({
                       // explicitly so they can re-aim immediately. The
                       // toast store coalesces identical messages, so rapid
                       // retries don't stack up.
-                      notify(`已有同名工作表「${trimmed}」，請改用其他名稱`, 'warning');
+                      notify(tImp(`已有同名工作表「${trimmed}」，請改用其他名稱`, `A sheet named "${trimmed}" already exists — pick another name`), 'warning');
                       return;
                     }
                     onRenameCommit(i, trimmed);
@@ -2829,7 +2837,7 @@ function SheetTabs({
                   // slot mirrors TabBar (drag right before 右鍵選單) so the
                   // three tab-like surfaces (TabBar / sheet tab / SlideRail)
                   // speak the same tooltip dialect.
-                  title={`${s.name}（雙擊重新命名 · 拖曳排序 · 右鍵選單）`}
+                  title={tImp(`${s.name}（雙擊重新命名 · 拖曳排序 · 右鍵選單）`, `${s.name} (double-click to rename · drag to reorder · right-click for menu)`)}
                   className="px-3 py-1 text-xs font-medium"
                 >
                   {s.name}
@@ -2845,7 +2853,7 @@ function SheetTabs({
                 // the same guard already in place on the right-click menu's
                 // 刪除 item below.
                 disabled={sheets.length <= 1}
-                title={sheets.length <= 1 ? '至少要保留一個工作表' : '刪除工作表'}
+                title={sheets.length <= 1 ? tImp('至少要保留一個工作表', 'At least one sheet must remain') : tImp('刪除工作表', 'Delete sheet')}
                 className={cn(
                   'mr-1 grid h-4 w-4 place-items-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:pointer-events-none',
                   sheets.length <= 1
@@ -2931,7 +2939,7 @@ function SheetTabs({
         <button
           type="button"
           onClick={onAdd}
-          title="在末端新增一張空白工作表（自動命名）"
+          title={tImp('在末端新增一張空白工作表（自動命名）', 'Add a new blank sheet at the end (auto-named)')}
           className="shrink-0 ml-1 grid h-7 w-7 place-items-center rounded text-muted-foreground hover:bg-secondary hover:text-foreground"
         >
           <Plus size={14} />
@@ -2983,7 +2991,7 @@ function SheetTabs({
             }}
             className="w-full text-left px-3 py-1.5 hover:bg-accent"
           >
-            重新命名工作表
+            {tImp('重新命名工作表', 'Rename sheet')}
           </button>
           <button
             type="button"
@@ -2994,7 +3002,7 @@ function SheetTabs({
             }}
             className="w-full text-left px-3 py-1.5 hover:bg-accent"
           >
-            複製工作表
+            {tImp('複製工作表', 'Duplicate sheet')}
           </button>
           <div className="my-1 h-px bg-border" />
           {/* Boundary-aware tooltip mirrors the same-file X button at line
@@ -3021,14 +3029,14 @@ function SheetTabs({
             type="button"
             role="menuitem"
             disabled={sheets.length <= 1}
-            title={sheets.length <= 1 ? '至少要保留一個工作表' : undefined}
+            title={sheets.length <= 1 ? tImp('至少要保留一個工作表', 'At least one sheet must remain') : undefined}
             onClick={() => {
               onDelete(ctxMenu.idx);
               setCtxMenu(null);
             }}
             className="w-full text-left px-3 py-1.5 text-destructive hover:bg-destructive/10 disabled:opacity-40 disabled:pointer-events-none"
           >
-            刪除工作表
+            {tImp('刪除工作表', 'Delete sheet')}
           </button>
         </div>
         );
@@ -3726,7 +3734,7 @@ function ImageOverlayLayer({
             // for consistency. Fixing both in one pass so the next reader
             // jumping to a referenced line lands on the actual title= they
             // expected, with the right component label next to it.
-            title="拖曳到任意位置"
+            title={tImp('拖曳到任意位置', 'Drag to any position')}
             className={cn(
               'absolute pointer-events-auto select-none',
               isSelected ? 'ring-2 ring-primary' : 'ring-1 ring-transparent hover:ring-primary/60',
@@ -3790,7 +3798,7 @@ function ImageOverlayLayer({
               <div
                 role="button"
                 tabIndex={-1}
-                title="拖曳調整大小 · Shift 解除等比例"
+                title={tImp('拖曳調整大小 · Shift 解除等比例', 'Drag to resize · Shift to unlock aspect ratio')}
                 className="absolute -bottom-1.5 -right-1.5 h-3 w-3 bg-primary border border-background rounded-sm"
                 style={{ cursor: 'nwse-resize' }}
                 onMouseDown={(e) => startResize(e, p.id, widthPx, heightPx)}

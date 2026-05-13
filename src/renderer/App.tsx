@@ -14,6 +14,7 @@ import {
   FolderOpen,
   FolderInput,
   FolderTree,
+  Globe,
   Loader2,
   Minimize2,
   Redo2,
@@ -38,6 +39,7 @@ import { applyChangeset, undoChangeset } from '../ai/changeset-apply';
 import { flushEditors } from '../lib/editor-flush';
 import { bumpLoadGen, currentLoadGen } from '../lib/workspace-load-gen';
 import { isFileMissingError } from '../lib/utils';
+import { useLocale, useT, resolveOsLocale, tImp, type Locale } from '../lib/i18n';
 import { tryEnterOpen, exitOpen } from '../lib/workspace-open-busy';
 import { exitClose, tryEnterClose } from '../lib/tab-close-busy';
 import { exitExportTab, isExportTabBusy, tryEnterExportTab } from '../lib/export-tab-busy';
@@ -113,7 +115,7 @@ export function App(): JSX.Element {
   // during in-flight" guard family.
   const openBatchExportDialog = useCallback(() => {
     if (isExportTabBusy()) {
-      notify('正在匯出中…請等目前的匯出完成再開啟', 'info');
+      notify(tImp('正在匯出中…請等目前的匯出完成再開啟', 'Exporting… please wait for the current export to finish before opening'), 'info');
       return;
     }
     setBatchExportOpen(true);
@@ -216,7 +218,7 @@ export function App(): JSX.Element {
         cfg = await window.gendoc.config.get();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        notify(`載入設定失敗：${msg}（已使用預設值）`, 'error');
+        notify(tImp(`載入設定失敗：${msg}（已使用預設值）`, `Failed to load settings: ${msg} (defaults applied)`), 'error');
         return;
       }
       // R389 — coerce against current SUPPORTED_MODELS so a config.json
@@ -225,6 +227,23 @@ export function App(): JSX.Element {
       // doc-block in types/ai.ts for the full failure trace.
       setModel(resolveSupportedModelId(cfg.defaultModel));
       setAutoSaveMs(cfg.autoSaveIntervalMs);
+      // R405 — resolve and apply UI locale: user preference (cfg.locale)
+      // wins; null means「follow OS」 → ask main for app.getLocale() and
+      // map zh-* to 'zh', everything else to 'en'. The OS-locale IPC may
+      // reject in degraded environments — fall back to 'en' silently so
+      // we don't block the rest of hydrate on the language switch.
+      try {
+        let effective: 'zh' | 'en';
+        if (cfg.locale) {
+          effective = cfg.locale;
+        } else {
+          const raw = await window.gendoc.app.getOsLocale();
+          effective = resolveOsLocale(raw);
+        }
+        useLocale.getState().setLocale(effective);
+      } catch {
+        /* swallow — store default 'en' already applied at module init */
+      }
       // Mirror per-turn knobs into the AI store. SettingsDialog persists these
       // to disk but the runtime previously read them from hardcoded literals
       // in AIPanel/orchestrator (4096 / 0.3) — so saving 8192 in Settings
@@ -249,7 +268,7 @@ export function App(): JSX.Element {
         setHasApiKey(has);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        notify(`讀取 API key 狀態失敗：${msg}`, 'warning');
+        notify(tImp(`讀取 API key 狀態失敗：${msg}`, `Failed to read API key status: ${msg}`), 'warning');
       }
       // App is pinned to a light/white-based UI; defensively strip any
       // stale `dark` class an older build may have left on documentElement.
@@ -324,6 +343,24 @@ export function App(): JSX.Element {
       // until that restart Anthropic would keep applying / billing cache
       // writes against a session whose owner had explicitly opted out.
       if (aiState.promptCache !== cfg.promptCache) aiState.setPromptCache(cfg.promptCache);
+      // R405 — also mirror locale change (from Settings dialog or toolbar
+      // picker) into useLocale. The picker writes config via config.set
+      // which fires gendoc:configChanged; same one-source-of-truth pattern
+      // as model / maxTokens / temperature / promptCache above.
+      try {
+        let effective: 'zh' | 'en';
+        if (cfg.locale) {
+          effective = cfg.locale;
+        } else {
+          const raw = await window.gendoc.app.getOsLocale();
+          effective = resolveOsLocale(raw);
+        }
+        if (useLocale.getState().locale !== effective) {
+          useLocale.getState().setLocale(effective);
+        }
+      } catch {
+        /* swallow — see boot-hydrate's same fallback rationale */
+      }
     };
     window.addEventListener('gendoc:configChanged', onChange);
     return () => window.removeEventListener('gendoc:configChanged', onChange);
@@ -373,7 +410,10 @@ export function App(): JSX.Element {
       // 「尚未儲存」 confirm on a workspace that was actually just saved.
       if (
         useWorkspace.getState().dirty &&
-        !(await window.gendoc.app.confirm('目前的變更尚未儲存，確定建立新專案？'))
+        !(await window.gendoc.app.confirm(tImp(
+          '目前的變更尚未儲存，確定建立新專案？',
+          'There are unsaved changes. Create a new project anyway?',
+        )))
       )
         return;
       // R169 — bump loadGen so any in-flight loadFromOpened (auto-open during
@@ -390,7 +430,7 @@ export function App(): JSX.Element {
       bumpLoadGen();
       useWorkspace.getState().newWorkspace();
     } catch (err) {
-      notify(`建立新專案失敗：${(err as Error).message}`, 'error');
+      notify(tImp(`建立新專案失敗：${(err as Error).message}`, `Failed to create new project: ${(err as Error).message}`), 'error');
     } finally {
       exitOpen();
     }
@@ -411,7 +451,10 @@ export function App(): JSX.Element {
       // confirm on a freshly auto-saved workspace.
       if (
         useWorkspace.getState().dirty &&
-        !(await window.gendoc.app.confirm('目前的變更尚未儲存，確定開啟其他檔案？'))
+        !(await window.gendoc.app.confirm(tImp(
+          '目前的變更尚未儲存，確定開啟其他檔案？',
+          'There are unsaved changes. Open a different file anyway?',
+        )))
       )
         return;
       // Mirror the error-handling contract from handleOpenRecent below: a
@@ -425,7 +468,7 @@ export function App(): JSX.Element {
       if (myGen !== currentLoadGen()) return;
       if (opened) useWorkspace.getState().loadFromOpened(opened);
     } catch (err) {
-      notify(`開啟失敗：${(err as Error).message}`, 'error');
+      notify(tImp(`開啟失敗：${(err as Error).message}`, `Failed to open: ${(err as Error).message}`), 'error');
     } finally {
       exitOpen();
     }
@@ -448,7 +491,10 @@ export function App(): JSX.Element {
       try {
         if (
           useWorkspace.getState().dirty &&
-          !(await window.gendoc.app.confirm('目前的變更尚未儲存，確定開啟其他檔案？'))
+          !(await window.gendoc.app.confirm(tImp(
+          '目前的變更尚未儲存，確定開啟其他檔案？',
+          'There are unsaved changes. Open a different file anyway?',
+        )))
         )
           return;
         const myGen = bumpLoadGen();
@@ -467,7 +513,7 @@ export function App(): JSX.Element {
         //「erring toward false negatives is correct because the asymmetry
         // (false-positive prune erases user state forever vs. false-
         // negative prune re-prompts next session)」 rationale.
-        notify(`開啟失敗：${(err as Error).message}`, 'error');
+        notify(tImp(`開啟失敗：${(err as Error).message}`, `Failed to open: ${(err as Error).message}`), 'error');
         if (isFileMissingError(err)) void pruneRecent(filePath);
       } finally {
         // R198 / R199 — release sync gate.
@@ -498,7 +544,7 @@ export function App(): JSX.Element {
       await window.gendoc.config.set({ recentFiles: [] });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      notify(`清除最近開啟失敗：${msg}`, 'error');
+      notify(tImp(`清除最近開啟失敗：${msg}`, `Failed to clear recent files: ${msg}`), 'error');
       return;
     }
     // Menu rebuild happens main-side on open/save; force a refresh now so
@@ -730,7 +776,7 @@ export function App(): JSX.Element {
           useWorkspace.getState().setSaveState('idle');
         } else {
           useWorkspace.getState().setSaveState('error', msg);
-          notify(`儲存失敗：${msg}`, 'error');
+          notify(tImp(`儲存失敗：${msg}`, `Failed to save: ${msg}`), 'error');
         }
       } finally {
         savingRef.current = false;
@@ -811,7 +857,7 @@ export function App(): JSX.Element {
       // beats「按了沒反應」 the previous silent path produced. Toast.ts
       // already dedupes by message+variant, so a true rapid-double-fire
       // (sub-100ms) just refreshes one info toast rather than spamming.
-      notify('正在匯出中…請等目前的匯出完成再試', 'info');
+      notify(tImp('正在匯出中…請等目前的匯出完成再試', 'Exporting… please wait for the current export to finish before retrying'), 'info');
       return;
     }
     try {
@@ -832,7 +878,7 @@ export function App(): JSX.Element {
     if (state.workspaceId !== exportWorkspaceId) return;
     const tab = state.tabs.find((t) => t.id === state.activeTabId);
     if (!tab) {
-      notify('沒有開啟的頁籤可以匯出', 'warning');
+      notify(tImp('沒有開啟的頁籤可以匯出', 'No open tabs to export'), 'warning');
       return;
     }
     let bytes: Uint8Array;
@@ -848,7 +894,7 @@ export function App(): JSX.Element {
       // hasn't been initialized yet — ask the user to open & edit it first
       // rather than writing a 0-byte file that Office can't open.
       if (tab.data.byteLength === 0) {
-        notify('這個頁籤還是空的，請先在編輯器中編輯內容再匯出', 'warning');
+        notify(tImp('這個頁籤還是空的，請先在編輯器中編輯內容再匯出', 'This tab is empty — edit content in the editor before exporting'), 'warning');
         return;
       }
       bytes = tab.data;
@@ -875,7 +921,7 @@ export function App(): JSX.Element {
       useWorkspace.getState().flashExport(fileName, res.filePath);
     } catch (e) {
       const msg = (e as Error).message;
-      if (msg !== 'export_cancelled') notify(`匯出失敗：${msg}`, 'error');
+      if (msg !== 'export_cancelled') notify(tImp(`匯出失敗：${msg}`, `Export failed: ${msg}`), 'error');
     }
     } finally {
       // R225 — release shared gate.
@@ -911,7 +957,7 @@ export function App(): JSX.Element {
       // rare (would require confirm to fire while busy — possible if the
       // dialog was opened before busy=true was claimed by a sibling
       // export). Defensive feedback keeps the silent-no-op out.
-      notify('正在匯出中…請等目前的匯出完成再試', 'info');
+      notify(tImp('正在匯出中…請等目前的匯出完成再試', 'Exporting… please wait for the current export to finish before retrying'), 'info');
       return;
     }
     try {
@@ -954,7 +1000,7 @@ export function App(): JSX.Element {
         })
         .filter((p): p is NonNullable<typeof p> => p !== null);
       if (payloads.length === 0) {
-        notify('沒有可匯出的內容（所有勾選的頁籤都還沒有編輯）', 'warning');
+        notify(tImp('沒有可匯出的內容（所有勾選的頁籤都還沒有編輯）', 'Nothing to export (all selected tabs are still empty)'), 'warning');
         return;
       }
       try {
@@ -972,7 +1018,7 @@ export function App(): JSX.Element {
         const successCount = res.filePaths.length;
         const failures = res.failures;
         if (failures.length === 0) {
-          notify(`已匯出 ${successCount} 個檔案到資料夾`, 'success');
+          notify(tImp(`已匯出 ${successCount} 個檔案到資料夾`, `Exported ${successCount} file${successCount === 1 ? '' : 's'} to folder`), 'success');
         } else {
           // R323 / R339 — shared dedupe + name-list formatting for both the
           // all-failed and partial-failed branches.
@@ -1002,23 +1048,29 @@ export function App(): JSX.Element {
             .map(([msg, n]) => (n > 1 ? `${msg} (× ${n})` : msg))
             .join('\n');
           const failedNames = failures
-            .map((f) => payloads[f.index]?.suggestedName ?? '(未知)')
-            .join('、');
+            .map((f) => payloads[f.index]?.suggestedName ?? tImp('(未知)', '(unknown)'))
+            .join(tImp('、', ', '));
           if (successCount === 0) {
             notify(
-              `匯出全部失敗（${failedNames}）：\n${errorLines}`,
+              tImp(
+                `匯出全部失敗（${failedNames}）：\n${errorLines}`,
+                `All exports failed (${failedNames}):\n${errorLines}`,
+              ),
               'error',
             );
           } else {
             notify(
-              `匯出 ${successCount} 個成功，${failures.length} 個失敗（${failedNames}）：\n${errorLines}`,
+              tImp(
+                `匯出 ${successCount} 個成功，${failures.length} 個失敗（${failedNames}）：\n${errorLines}`,
+                `${successCount} succeeded, ${failures.length} failed (${failedNames}):\n${errorLines}`,
+              ),
               'warning',
             );
           }
         }
       } catch (e) {
         const msg = (e as Error).message;
-        notify(`批次匯出失敗：${msg}`, 'error');
+        notify(tImp(`批次匯出失敗：${msg}`, `Batch export failed: ${msg}`), 'error');
       }
     } finally {
       exitExportTab();
@@ -1092,7 +1144,7 @@ export function App(): JSX.Element {
       row = await window.gendoc.undo.pop(workspaceId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      notify(`復原失敗：${msg}`, 'error');
+      notify(tImp(`復原失敗：${msg}`, `Undo failed: ${msg}`), 'error');
       void refreshCanUndo();
       return;
     }
@@ -1129,7 +1181,7 @@ export function App(): JSX.Element {
       cs = deserializeChangeset(row.changesetJson);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      notify(`復原失敗：歷史紀錄損毀（${msg}）`, 'error');
+      notify(tImp(`復原失敗：歷史紀錄損毀（${msg}）`, `Undo failed: history corrupted (${msg})`), 'error');
       void refreshCanUndo();
       return;
     }
@@ -1258,7 +1310,7 @@ export function App(): JSX.Element {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      notify(`重做失敗：${msg}`, 'error');
+      notify(tImp(`重做失敗：${msg}`, `Redo failed: ${msg}`), 'error');
       // Workspace swap during the failed push window: don't pollute NEW's
       // redo stack with OLD's cs. Same shape as the post-push setCanUndo
       // guard a few lines down.
@@ -1324,7 +1376,7 @@ export function App(): JSX.Element {
       setExplorerRoot(picked);
       setExplorerOpen(true);
     } catch (err) {
-      notify(`開啟資料夾失敗：${(err as Error).message}`, 'error');
+      notify(tImp(`開啟資料夾失敗：${(err as Error).message}`, `Failed to open folder: ${(err as Error).message}`), 'error');
     } finally {
       folderPickInFlightRef.current = false;
     }
@@ -1609,7 +1661,7 @@ export function App(): JSX.Element {
             await flushEditors();
             useWorkspace.getState().removeTab(id);
           } catch (err) {
-            notify(`關閉頁籤失敗：${(err as Error).message}`, 'error');
+            notify(tImp(`關閉頁籤失敗：${(err as Error).message}`, `Failed to close tab: ${(err as Error).message}`), 'error');
           } finally {
             exitClose(id);
           }
@@ -1796,7 +1848,10 @@ export function App(): JSX.Element {
         try {
           if (
             useWorkspace.getState().dirty &&
-            !(await window.gendoc.app.confirm('目前的變更尚未儲存，確定開啟其他檔案？'))
+            !(await window.gendoc.app.confirm(tImp(
+          '目前的變更尚未儲存，確定開啟其他檔案？',
+          'There are unsaved changes. Open a different file anyway?',
+        )))
           )
             return;
           const myGen = bumpLoadGen();
@@ -1806,7 +1861,7 @@ export function App(): JSX.Element {
           if (myGen !== currentLoadGen()) return;
           if (opened) useWorkspace.getState().loadFromOpened(opened);
         } catch (err) {
-          notify(`開啟失敗：${(err as Error).message}`, 'error');
+          notify(tImp(`開啟失敗：${(err as Error).message}`, `Failed to open: ${(err as Error).message}`), 'error');
         } finally {
           exitOpen();
         }
@@ -1881,9 +1936,9 @@ export function App(): JSX.Element {
       // workspace already swapped.
       if (useWorkspace.getState().workspaceId !== dropWorkspaceId) return;
       if (failures.length === 1) {
-        notify(`開啟失敗：${failures[0]}`, 'error');
+        notify(tImp(`開啟失敗：${failures[0]}`, `Failed to open: ${failures[0]}`), 'error');
       } else if (failures.length > 1) {
-        notify(`${failures.length} 個檔案無法開啟：\n\n${failures.join('\n')}`, 'error');
+        notify(tImp(`${failures.length} 個檔案無法開啟：\n\n${failures.join('\n')}`, `${failures.length} files could not be opened:\n\n${failures.join('\n')}`), 'error');
       }
     };
     window.addEventListener('dragenter', onEnter);
@@ -1968,7 +2023,7 @@ export function App(): JSX.Element {
         <button
           type="button"
           onClick={() => setFocusMode(false)}
-          title="離開專注模式 (Esc 或 Ctrl+Shift+F)"
+          title={tImp('離開專注模式 (Esc 或 Ctrl+Shift+F)', 'Exit focus mode (Esc or Ctrl+Shift+F)')}
           className="fixed top-3 right-3 z-50 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-background/70 hover:bg-background border border-border/60 hover:border-border shadow-sm text-[11px] text-muted-foreground hover:text-foreground backdrop-blur-sm transition-all"
         >
           <Minimize2 className="h-3 w-3" />
@@ -2054,14 +2109,19 @@ function Toolbar({
   onSettings: () => void;
   onEnterFocus: () => void;
 }) {
+  // R405 — bilingual via useT(). Strings paired (zh, en); the toolbar
+  // re-renders on locale change so a click in the language picker flips
+  // every label / tooltip immediately. Same useT idiom across components.
+  const t = useT();
+  const locale = useLocale((s) => s.locale);
   // Show only the file name + parent dir, not the full absolute path. Keeps
   // the bar from getting clobbered by deep paths and the full path is still
   // available in the tooltip / status bar.
-  const shortPath = filePath ? shortenPath(filePath) : '未儲存';
+  const shortPath = filePath ? shortenPath(filePath) : t('未儲存', 'Unsaved');
   const exportExt = activeTabType === 'markdown' ? '.md' : activeTabType ? `.${activeTabType}` : '';
   const exportTitle = activeTabType
-    ? `匯出此頁籤為 ${exportExt} (Ctrl+E)`
-    : '匯出此頁籤（先開啟一個頁籤）';
+    ? t(`匯出此頁籤為 ${exportExt} (Ctrl+E)`, `Export this tab as ${exportExt} (Ctrl+E)`)
+    : t('匯出此頁籤（先開啟一個頁籤）', 'Export this tab (open a tab first)');
   // Compose the Save button's icon + title from saveState. Saving wins
   // over dirty (we're literally saving), success briefly flashes a check,
   // error keeps the icon but tints + tooltips the message.
@@ -2070,14 +2130,17 @@ function Toolbar({
   let saveDisabled = false;
   if (saveState === 'saving') {
     saveIcon = <Loader2 className="h-4 w-4 animate-spin" />;
-    saveTitle = '儲存中…';
+    saveTitle = t('儲存中…', 'Saving…');
     saveDisabled = true;
   } else if (saveState === 'success') {
     saveIcon = <Check className="h-4 w-4 text-emerald-500" />;
-    saveTitle = '已儲存';
+    saveTitle = t('已儲存', 'Saved');
   } else if (saveState === 'error') {
     saveIcon = <AlertCircle className="h-4 w-4 text-destructive" />;
-    saveTitle = `儲存失敗：${saveError ?? '未知錯誤'}`;
+    saveTitle = t(
+      `儲存失敗：${saveError ?? '未知錯誤'}`,
+      `Save failed: ${saveError ?? 'Unknown error'}`,
+    );
   } else {
     saveIcon = <Save className="h-4 w-4" />;
     // Surface 另存新檔 (Ctrl+Shift+S) alongside the primary 儲存 hint.
@@ -2096,8 +2159,11 @@ function Toolbar({
     // error tooltips report transient state, where extra shortcut text
     // would dilute the live status read. The middle-dot "·" mirrors the
     // existing R39 ContextItem layout convention for compound hint strings.
-    const saveAsHint = ' · 另存新檔 (Ctrl+Shift+S)';
-    saveTitle = (dirty ? '儲存（有未儲存變更） (Ctrl+S)' : '儲存 (Ctrl+S)') + saveAsHint;
+    const saveAsHint = t(' · 另存新檔 (Ctrl+Shift+S)', ' · Save As (Ctrl+Shift+S)');
+    saveTitle =
+      (dirty
+        ? t('儲存（有未儲存變更） (Ctrl+S)', 'Save (has unsaved changes) (Ctrl+S)')
+        : t('儲存 (Ctrl+S)', 'Save (Ctrl+S)')) + saveAsHint;
   }
   return (
     <div className="flex items-center h-11 px-2 border-b gap-0.5 bg-secondary/20">
@@ -2105,7 +2171,11 @@ function Toolbar({
         size="icon"
         variant={explorerOpen ? 'secondary' : 'ghost'}
         onClick={onToggleExplorer}
-        title={explorerOpen ? '收合檔案總管 (Ctrl+B)' : '展開檔案總管 (Ctrl+B)'}
+        title={
+          explorerOpen
+            ? t('收合檔案總管 (Ctrl+B)', 'Collapse file explorer (Ctrl+B)')
+            : t('展開檔案總管 (Ctrl+B)', 'Expand file explorer (Ctrl+B)')
+        }
         // R153 — toggle-state SR exposure. The `variant` flips secondary /
         // ghost to give sighted users a visible「目前展開」 cue, but SR users
         // had no equivalent. Same `aria-pressed` pattern landed this round
@@ -2119,13 +2189,18 @@ function Toolbar({
         <FolderTree className="h-4 w-4" />
       </Button>
       <div className="w-px h-5 bg-border mx-1" />
-      <Button size="icon" variant="ghost" onClick={onNew} title="新專案 (Ctrl+N)">
+      <Button size="icon" variant="ghost" onClick={onNew} title={t('新專案 (Ctrl+N)', 'New project (Ctrl+N)')}>
         <FilePlus2 className="h-4 w-4" />
       </Button>
-      <Button size="icon" variant="ghost" onClick={onOpen} title="開啟 .gd (Ctrl+O)">
+      <Button size="icon" variant="ghost" onClick={onOpen} title={t('開啟 .gd (Ctrl+O)', 'Open .gd (Ctrl+O)')}>
         <FolderOpen className="h-4 w-4" />
       </Button>
-      <Button size="icon" variant="ghost" onClick={onOpenFolder} title="開啟資料夾… (Ctrl+K Ctrl+O)">
+      <Button
+        size="icon"
+        variant="ghost"
+        onClick={onOpenFolder}
+        title={t('開啟資料夾… (Ctrl+K Ctrl+O)', 'Open folder… (Ctrl+K Ctrl+O)')}
+      >
         <FolderInput className="h-4 w-4" />
       </Button>
       {/* Save button reflects async state: spinner while saving, check on
@@ -2182,8 +2257,8 @@ function Toolbar({
         // when the button is greyed out is more noise than signal.
         title={
           hasAnyTab
-            ? '批次匯出多個頁籤到資料夾 (Ctrl+Shift+E)'
-            : '沒有可匯出的頁籤'
+            ? t('批次匯出多個頁籤到資料夾 (Ctrl+Shift+E)', 'Batch export tabs to a folder (Ctrl+Shift+E)')
+            : t('沒有可匯出的頁籤', 'No tabs to export')
         }
       >
         <FileDown className="h-4 w-4" />
@@ -2194,7 +2269,7 @@ function Toolbar({
         variant="ghost"
         onClick={onUndo}
         disabled={!canUndo}
-        title={canUndo ? '復原 AI 變更 (Ctrl+Z)' : '沒有可復原的變更'}
+        title={canUndo ? t('復原 AI 變更 (Ctrl+Z)', 'Undo AI change (Ctrl+Z)') : t('沒有可復原的變更', 'Nothing to undo')}
       >
         <Undo2 className="h-4 w-4" />
       </Button>
@@ -2203,7 +2278,7 @@ function Toolbar({
         variant="ghost"
         onClick={onRedo}
         disabled={!canRedo}
-        title={canRedo ? '重做 AI 變更 (Ctrl+Shift+Z)' : '沒有可重做的變更'}
+        title={canRedo ? t('重做 AI 變更 (Ctrl+Shift+Z)', 'Redo AI change (Ctrl+Shift+Z)') : t('沒有可重做的變更', 'Nothing to redo')}
       >
         <Redo2 className="h-4 w-4" />
       </Button>
@@ -2223,8 +2298,8 @@ function Toolbar({
             // same way.
             <span
               className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0"
-              title="尚未儲存"
-              aria-label="尚未儲存"
+              title={t('尚未儲存', 'Unsaved')}
+              aria-label={t('尚未儲存', 'Unsaved')}
             />
           )}
           {/* Truncate-with-no-tooltip was a quiet inconsistency in this
@@ -2243,14 +2318,14 @@ function Toolbar({
               fallback in the tooltip rather than nothing. */}
           <span
             className="text-sm font-medium truncate"
-            title={title || '未命名專案'}
+            title={title || t('未命名專案', 'Untitled project')}
           >
-            {title || '未命名專案'}
+            {title || t('未命名專案', 'Untitled project')}
           </span>
         </div>
         <div
           className="text-[10px] text-muted-foreground truncate max-w-full"
-          title={filePath || '尚未儲存到磁碟'}
+          title={filePath || t('尚未儲存到磁碟', 'Not saved to disk yet')}
           dir="rtl"
         >
           {shortPath}
@@ -2261,18 +2336,59 @@ function Toolbar({
         size="icon"
         variant="ghost"
         onClick={onEnterFocus}
-        title="進入專注模式 — 隱藏側欄與工具列以全幅檢視文件 (Ctrl+Shift+F)"
+        title={t(
+          '進入專注模式 — 隱藏側欄與工具列以全幅檢視文件 (Ctrl+Shift+F)',
+          'Enter focus mode — hide sidebars and toolbar for full-width reading (Ctrl+Shift+F)',
+        )}
       >
         <FocusIcon className="h-4 w-4" />
       </Button>
+      {/* R405 — language picker. Click toggles between 'zh' and 'en' and
+          persists via window.gendoc.config.set({locale}). The IPC handler
+          dispatches gendoc:configChanged → onChange listener mirrors into
+          useLocale store → React re-renders this toolbar with the flipped
+          labels; main also rebuilds the native menu (ipc.ts:226-238) so
+          the File / Edit / View / AI menus follow within the same tick.
+          Compact「中 / EN」 label so the chrome-row doesn't grow. */}
+      <Button
+        size="icon"
+        variant="ghost"
+        onClick={() => {
+          const next: Locale = locale === 'zh' ? 'en' : 'zh';
+          // Optimistically update store so React re-renders immediately;
+          // the IPC mirror via gendoc:configChanged is the persistence
+          // path. If config.set rejects (disk full / EACCES), the next
+          // boot will rehydrate from the prior locale — degraded but
+          // recoverable, mirroring R241 / R242's best-effort posture.
+          useLocale.getState().setLocale(next);
+          void window.gendoc.config.set({ locale: next }).then(() => {
+            window.dispatchEvent(new CustomEvent('gendoc:configChanged'));
+          }).catch(() => undefined);
+        }}
+        title={
+          locale === 'zh'
+            ? '切換至 English / Switch to English'
+            : 'Switch to 中文 / 切換至中文'
+        }
+        aria-label={locale === 'zh' ? '切換語言' : 'Switch language'}
+      >
+        <Globe className="h-4 w-4" />
+        <span className="absolute bottom-0.5 right-0.5 text-[8px] font-medium leading-none text-muted-foreground bg-secondary/80 rounded px-0.5">
+          {locale === 'zh' ? '中' : 'EN'}
+        </span>
+      </Button>
       {/* Surface the Ctrl+, accelerator the same way every other button in
-          this toolbar does (新專案 Ctrl+N, 開啟 Ctrl+O, 儲存 Ctrl+S, 匯出 Ctrl+E,
-          復原 Ctrl+Z, 專注模式 Ctrl+Shift+F …). The shortcut is wired in
-          menu.ts:180-183 → 'menu:openSettings' → setSettingsOpen(true) at
-          App.tsx:597, so the keystroke really does open this dialog —
-          previously the only hint was the AI submenu in the native app menu,
-          which most users don't go hunting through. */}
-      <Button size="icon" variant="ghost" onClick={onSettings} title="設定 (Ctrl+,)">
+          this toolbar does. The shortcut is wired in menu.ts → 'menu:
+          openSettings' → setSettingsOpen(true) at App.tsx, so the keystroke
+          really does open this dialog — previously the only hint was the AI
+          submenu in the native app menu, which most users don't go hunting
+          through. */}
+      <Button
+        size="icon"
+        variant="ghost"
+        onClick={onSettings}
+        title={t('設定 (Ctrl+,)', 'Settings (Ctrl+,)')}
+      >
         <SettingsIcon className="h-4 w-4" />
       </Button>
     </div>

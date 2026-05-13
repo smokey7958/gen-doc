@@ -19,6 +19,7 @@ import { notify } from '../store/toast';
 import { bumpLoadGen, currentLoadGen } from '../lib/workspace-load-gen';
 import { exitOpen, tryEnterOpen } from '../lib/workspace-open-busy';
 import { isFileMissingError } from '../lib/utils';
+import { useT, tImp } from '../lib/i18n';
 import type { TabType } from '../types/manifest';
 import { DocxEditor } from './DocxEditor';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -160,6 +161,33 @@ const QUICK_STARTS: QuickStart[] = [
 
 function EmptyState() {
   const addTab = useWorkspace((s) => s.addTab);
+  // R405 — bilingual via useT(). QUICK_STARTS at module scope keeps the
+  // structural metadata (icon, iconClass, type); the human-readable label /
+  // hint pair is resolved per-locale at render time via the `labels` map
+  // below. Re-renders on locale change flip every card / heading / button.
+  const t = useT();
+  const quickLabels: Record<TabType, { label: string; hint: string }> = {
+    markdown: {
+      label: t('Markdown 筆記', 'Markdown notes'),
+      hint: t('純文字 + 段落結構，最快開始的格式', 'Plain text + paragraph structure — the fastest format to start with'),
+    },
+    html: {
+      label: t('HTML 文件', 'HTML document'),
+      hint: t('原始碼 / 對照 / 預覽三模式，可離線匯出 .html', 'Source / split / preview modes; exportable to a self-contained .html'),
+    },
+    docx: {
+      label: t('Word 文件', 'Word document'),
+      hint: t('段落 / 標題 / 列表結構編輯', 'Paragraph / heading / list structural editing'),
+    },
+    xlsx: {
+      label: t('Excel 試算表', 'Excel spreadsheet'),
+      hint: t('工作表 / 儲存格 / 公式 編輯', 'Sheet / cell / formula editing'),
+    },
+    pptx: {
+      label: t('PowerPoint 簡報', 'PowerPoint presentation'),
+      hint: t('投影片 / 文字框 / 圖形結構編輯', 'Slide / text-box / shape structural editing'),
+    },
+  };
   // Recent files surfaced inline — Adobe / VS Code / IntelliJ all put recent
   // documents on the start screen so re-opening yesterday's work is one
   // click instead of File → 最近開啟 → submenu. Loaded once on mount; the
@@ -234,7 +262,10 @@ function EmptyState() {
       // parity.
       if (
         useWorkspace.getState().dirty &&
-        !(await window.gendoc.app.confirm('目前的變更尚未儲存，確定開啟其他檔案？'))
+        !(await window.gendoc.app.confirm(tImp(
+          '目前的變更尚未儲存，確定開啟其他檔案？',
+          'There are unsaved changes. Open a different file anyway?',
+        )))
       )
         return;
       const myGen = bumpLoadGen();
@@ -242,7 +273,7 @@ function EmptyState() {
       if (myGen !== currentLoadGen()) return;
       if (opened) useWorkspace.getState().loadFromOpened(opened);
     } catch (err) {
-      notify(`開啟失敗：${(err as Error).message}`, 'error');
+      notify(tImp(`開啟失敗：${(err as Error).message}`, `Failed to open: ${(err as Error).message}`), 'error');
     } finally {
       exitOpen();
     }
@@ -265,7 +296,10 @@ function EmptyState() {
       // there for the close-all-tabs / Ctrl+Shift+T recovery rationale.
       if (
         useWorkspace.getState().dirty &&
-        !(await window.gendoc.app.confirm('目前的變更尚未儲存，確定開啟其他檔案？'))
+        !(await window.gendoc.app.confirm(tImp(
+          '目前的變更尚未儲存，確定開啟其他檔案？',
+          'There are unsaved changes. Open a different file anyway?',
+        )))
       )
         return;
       const myGen = bumpLoadGen();
@@ -287,7 +321,7 @@ function EmptyState() {
       // discovering the recent entry vanished without explanation is the
       // surprise we're closing. See isFileMissingError doc-block in
       // lib/utils.ts for the asymmetry rationale.
-      notify(`開啟失敗：${(err as Error).message}`, 'error');
+      notify(tImp(`開啟失敗：${(err as Error).message}`, `Failed to open: ${(err as Error).message}`), 'error');
       if (isFileMissingError(err)) {
         try {
           const cfg = await window.gendoc.config.get();
@@ -309,37 +343,49 @@ function EmptyState() {
         <header className="space-y-2">
           <div className="flex items-center gap-2 text-primary">
             <Sparkles className="h-5 w-5" />
-            <h1 className="text-2xl font-semibold text-foreground">歡迎使用 Gen Doc</h1>
+            <h1 className="text-2xl font-semibold text-foreground">
+              {t('歡迎使用 Gen Doc', 'Welcome to Gen Doc')}
+            </h1>
           </div>
           <p className="text-sm text-muted-foreground">
-            一個 .gd 檔可以同時放筆記、HTML、文件、表格與簡報。右側的 AI 對話框會根據你選的內容做結構化編輯。
+            {t(
+              '一個 .gd 檔可以同時放筆記、HTML、文件、表格與簡報。右側的 AI 對話框會根據你選的內容做結構化編輯。',
+              'A single .gd workspace can hold notes, HTML, documents, sheets, and slides. The AI panel on the right makes structured edits to whatever you select.',
+            )}
           </p>
         </header>
 
         <section className="space-y-3">
-          <h2 className="text-xs uppercase tracking-wider text-muted-foreground">建立新頁籤</h2>
+          <h2 className="text-xs uppercase tracking-wider text-muted-foreground">
+            {t('建立新頁籤', 'Create a new tab')}
+          </h2>
           <div className="grid grid-cols-2 gap-2">
-            {QUICK_STARTS.map(({ type, label, hint, icon: Icon, iconClass }) => (
-              <button
-                key={type}
-                type="button"
-                onClick={() => addTab(type)}
-                className="group flex items-start gap-3 px-3 py-3 rounded-lg border bg-card hover:border-primary/40 hover:bg-accent/40 transition-colors text-left"
-              >
-                <div className={`p-2 rounded-md ${iconClass}`}>
-                  <Icon className="h-4 w-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium">{label}</div>
-                  <div className="text-xs text-muted-foreground line-clamp-2">{hint}</div>
-                </div>
-              </button>
-            ))}
+            {QUICK_STARTS.map(({ type, icon: Icon, iconClass }) => {
+              const { label, hint } = quickLabels[type];
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => addTab(type)}
+                  className="group flex items-start gap-3 px-3 py-3 rounded-lg border bg-card hover:border-primary/40 hover:bg-accent/40 transition-colors text-left"
+                >
+                  <div className={`p-2 rounded-md ${iconClass}`}>
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium">{label}</div>
+                    <div className="text-xs text-muted-foreground line-clamp-2">{hint}</div>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </section>
 
         <section className="space-y-3">
-          <h2 className="text-xs uppercase tracking-wider text-muted-foreground">或開啟既有檔案</h2>
+          <h2 className="text-xs uppercase tracking-wider text-muted-foreground">
+            {t('或開啟既有檔案', 'Or open an existing file')}
+          </h2>
           <button
             type="button"
             onClick={() => void onOpenExisting()}
@@ -349,7 +395,9 @@ function EmptyState() {
               <FolderOpen className="h-4 w-4" />
             </div>
             <div className="flex-1">
-              <div className="text-sm font-medium">開啟 .gd 專案</div>
+              <div className="text-sm font-medium">
+                {t('開啟 .gd 專案', 'Open a .gd project')}
+              </div>
               <div className="text-xs text-muted-foreground">
                 <kbd className="px-1 rounded bg-secondary border text-[10px]">Ctrl/⌘+O</kbd>
               </div>
@@ -372,13 +420,18 @@ function EmptyState() {
               welcome layout tight without competing visual weight against
               the primary Ctrl+O button. */}
           <p className="text-[11px] text-muted-foreground px-1">
-            也可將 .gd / .md / .html / .docx / .xlsx / .pptx 檔案拖曳到此視窗開啟
+            {t(
+              '也可將 .gd / .md / .html / .docx / .xlsx / .pptx 檔案拖曳到此視窗開啟',
+              'You can also drag .gd / .md / .html / .docx / .xlsx / .pptx files onto this window to open them',
+            )}
           </p>
         </section>
 
         {recents.length > 0 && (
           <section className="space-y-2">
-            <h2 className="text-xs uppercase tracking-wider text-muted-foreground">最近開啟</h2>
+            <h2 className="text-xs uppercase tracking-wider text-muted-foreground">
+              {t('最近開啟', 'Recent')}
+            </h2>
             <ul className="rounded-lg border bg-card divide-y">
               {recents.map((p) => {
                 const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));

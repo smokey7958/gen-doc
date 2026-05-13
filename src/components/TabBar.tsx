@@ -17,6 +17,7 @@ import { exitExportTab, tryEnterExportTab } from '../lib/export-tab-busy';
 import type { Tab } from '../types/tab';
 import type { TabType } from '../types/manifest';
 import { cn, clampToViewport } from '../lib/utils';
+import { useT, tImp } from '../lib/i18n';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -153,7 +154,7 @@ export function TabBar(): JSX.Element {
             return;
           void closeTabWithFlush(tabId);
         } catch (err) {
-          notify(`關閉頁籤失敗：${(err as Error).message}`, 'error');
+          notify(tImp(`關閉頁籤失敗：${(err as Error).message}`, `Failed to close tab: ${(err as Error).message}`), 'error');
         } finally {
           exitClose(tabId);
         }
@@ -223,7 +224,7 @@ export function TabBar(): JSX.Element {
       await flushEditors();
       for (const id of ids) removeTab(id);
     } catch (err) {
-      notify(`${action}失敗：${(err as Error).message}`, 'error');
+      notify(tImp(`${action}失敗：${(err as Error).message}`, `${action} failed: ${(err as Error).message}`), 'error');
     }
   };
 
@@ -236,6 +237,8 @@ export function TabBar(): JSX.Element {
   const nameCounts = new Map<string, number>();
   for (const t of tabs) nameCounts.set(t.name, (nameCounts.get(t.name) ?? 0) + 1);
 
+  // R405 — bilingual; useT here so this component's strings flip on toggle.
+  const t = useT();
   return (
     <div ref={barRef} className="flex items-center h-10 border-b bg-secondary/40 px-1 gap-0.5 overflow-x-auto">
       {tabs.map((tab, idx) => {
@@ -402,7 +405,7 @@ export function TabBar(): JSX.Element {
                   setRenamingId(null);
                   if (trimmed === tab.name) return;
                   if (!trimmed) {
-                    notify('頁籤名稱不能為空', 'warning');
+                    notify(t('頁籤名稱不能為空', 'Tab name cannot be empty'), 'warning');
                     return;
                   }
                   renameTab(tab.id, trimmed);
@@ -504,7 +507,10 @@ export function TabBar(): JSX.Element {
               // string in the same insertion point.
               <span
                 className="max-w-[220px] truncate"
-                title={`${tab.sourcePath ?? tab.name}${jumpHint}（雙擊重新命名 · 中鍵關閉 · 拖曳排序 · 右鍵選單）`}
+                title={`${tab.sourcePath ?? tab.name}${jumpHint}${t(
+                  '（雙擊重新命名 · 中鍵關閉 · 拖曳排序 · 右鍵選單）',
+                  ' (double-click to rename · middle-click to close · drag to reorder · right-click for menu)',
+                )}`}
               >
                 {tab.name}
                 {dirSuffix && (
@@ -522,8 +528,8 @@ export function TabBar(): JSX.Element {
               // we'd expect from VS Code's modified-indicator.
               <span
                 className="h-1.5 w-1.5 rounded-full bg-primary"
-                title="尚未儲存"
-                aria-label="尚未儲存"
+                title={t('尚未儲存', 'Unsaved')}
+                aria-label={t('尚未儲存', 'Unsaved')}
               />
             )}
             {/* Export disabled for fresh binary tabs (docx/xlsx/pptx start at
@@ -596,9 +602,9 @@ export function TabBar(): JSX.Element {
                   title={
                     canExport
                       ? isActive
-                        ? `匯出此頁籤為 ${exportExt} (Ctrl+E)`
-                        : `匯出此頁籤為 ${exportExt}`
-                      : '這個頁籤還是空的，請先在編輯器中編輯內容再匯出'
+                        ? t(`匯出此頁籤為 ${exportExt} (Ctrl+E)`, `Export this tab as ${exportExt} (Ctrl+E)`)
+                        : t(`匯出此頁籤為 ${exportExt}`, `Export this tab as ${exportExt}`)
+                      : t('這個頁籤還是空的，請先在編輯器中編輯內容再匯出', "This tab is empty — edit content in the editor before exporting")
                   }
                 >
                   <Download className="h-3 w-3" />
@@ -638,7 +644,7 @@ export function TabBar(): JSX.Element {
               // line 383 stays terse because it lives inside a 4-gesture
               // compound tooltip already scoped to this tab — the
               // standalone × button has no such ambient scope.
-              title={isActive ? '關閉此頁籤 (Ctrl+W)' : '關閉此頁籤'}
+              title={isActive ? t('關閉此頁籤 (Ctrl+W)', 'Close this tab (Ctrl+W)') : t('關閉此頁籤', 'Close this tab')}
               // R152 — icon-only-button accessible-name parity. Same-file
               // sibling at line 423-424 (尚未儲存 dirty-dot) already pairs
               // `title` with `aria-label`; the canonical icon-only-close
@@ -653,7 +659,7 @@ export function TabBar(): JSX.Element {
               // shortcut parenthetical is dropped here per AIPanel.tsx:775
               // 's convention — aria-label carries the action verb only,
               // shortcut belongs in the visual tooltip.
-              aria-label="關閉此頁籤"
+              aria-label={t('關閉此頁籤', 'Close this tab')}
             >
               <X className="h-3 w-3" />
             </button>
@@ -699,7 +705,10 @@ export function TabBar(): JSX.Element {
             variant="ghost"
             size="sm"
             className="h-7 px-1.5 ml-1 gap-0.5"
-            title="新增頁籤 — 點擊選擇格式 (Markdown / HTML / Word / Excel / PowerPoint)"
+            title={t(
+              '新增頁籤 — 點擊選擇格式 (Markdown / HTML / Word / Excel / PowerPoint)',
+              'New tab — click to pick a format (Markdown / HTML / Word / Excel / PowerPoint)',
+            )}
           >
             <Plus className="h-4 w-4" />
             <ChevronDown className="h-3 w-3 opacity-60" />
@@ -748,7 +757,7 @@ export function TabBar(): JSX.Element {
               className="fixed z-50 min-w-[180px] rounded-md border bg-popover text-popover-foreground shadow-md py-1 text-xs"
             >
               <ContextItem
-                label="重新命名"
+                label={t('重新命名', 'Rename')}
                 onClick={() => {
                   setRenamingId(tab.id);
                   setCtxMenu(null);
@@ -793,10 +802,10 @@ export function TabBar(): JSX.Element {
                   descriptive phrasing for state-of-world boundaries that
                   don't fit the "已經是X" mold. */}
               <ContextItem
-                label="重新開啟剛才關閉的頁籤"
+                label={t('重新開啟剛才關閉的頁籤', 'Reopen recently closed tab')}
                 shortcut="Ctrl+Shift+T"
                 disabled={recentlyClosedCount === 0}
-                disabledReason="目前沒有可重新開啟的頁籤"
+                disabledReason={t('目前沒有可重新開啟的頁籤', 'No recently closed tabs to reopen')}
                 onClick={() => {
                   useWorkspace.getState().reopenClosedTab();
                   setCtxMenu(null);
@@ -813,7 +822,7 @@ export function TabBar(): JSX.Element {
                   have no global keystroke, so we leave their shortcut empty
                   rather than fabricate one. */}
               <ContextItem
-                label="關閉"
+                label={t('關閉', 'Close')}
                 shortcut="Ctrl+W"
                 onClick={() => {
                   // Close the menu first so it doesn't sit on top of the
@@ -824,20 +833,20 @@ export function TabBar(): JSX.Element {
                 }}
               />
               <ContextItem
-                label="關閉其他"
+                label={t('關閉其他', 'Close Others')}
                 disabled={otherIds.length === 0}
-                disabledReason="目前只有這一個頁籤"
+                disabledReason={t('目前只有這一個頁籤', 'Only this tab is open')}
                 onClick={() => {
-                  void closeMany(otherIds, '關閉其他');
+                  void closeMany(otherIds, t('關閉其他', 'Close Others'));
                   setCtxMenu(null);
                 }}
               />
               <ContextItem
-                label="關閉右側"
+                label={t('關閉右側', 'Close to the Right')}
                 disabled={rightIds.length === 0}
-                disabledReason="已經是最右側的頁籤"
+                disabledReason={t('已經是最右側的頁籤', 'Already the rightmost tab')}
                 onClick={() => {
-                  void closeMany(rightIds, '關閉右側');
+                  void closeMany(rightIds, t('關閉右側', 'Close to the Right'));
                   setCtxMenu(null);
                 }}
               />
@@ -849,10 +858,10 @@ export function TabBar(): JSX.Element {
                   defensive dead code rather than fabricating a hint for
                   a state users can't reach. */}
               <ContextItem
-                label="全部關閉"
+                label={t('全部關閉', 'Close All')}
                 disabled={allIds.length === 0}
                 onClick={() => {
-                  void closeMany(allIds, '全部關閉');
+                  void closeMany(allIds, t('全部關閉', 'Close All'));
                   setCtxMenu(null);
                 }}
               />
@@ -936,7 +945,7 @@ async function exportSingleTab(tab: Tab): Promise<void> {
     // R322 — surface busy state. Same toast shape / rationale as
     // handleExportTab in App.tsx; toast.ts dedupes the message+variant
     // so rapid double-fire stays quiet.
-    notify('正在匯出中…請等目前的匯出完成再試', 'info');
+    notify(tImp('正在匯出中…請等目前的匯出完成再試', 'Exporting… please wait for the current export to finish before retrying'), 'info');
     return;
   }
   try {
@@ -961,7 +970,7 @@ async function exportSingleTab(tab: Tab): Promise<void> {
     ext = 'html';
   } else {
     if (fresh.data.byteLength === 0) {
-      notify('這個頁籤還是空的，請先在編輯器中編輯內容再匯出', 'warning');
+      notify(tImp('這個頁籤還是空的，請先在編輯器中編輯內容再匯出', 'This tab is empty — edit content in the editor before exporting'), 'warning');
       return;
     }
     bytes = fresh.data;
@@ -983,7 +992,7 @@ async function exportSingleTab(tab: Tab): Promise<void> {
     useWorkspace.getState().flashExport(fileName, res.filePath);
   } catch (e) {
     const msg = (e as Error).message;
-    if (msg !== 'export_cancelled') notify(`匯出失敗：${msg}`, 'error');
+    if (msg !== 'export_cancelled') notify(tImp(`匯出失敗：${msg}`, `Export failed: ${msg}`), 'error');
   }
   } finally {
     // R225 — release shared gate.

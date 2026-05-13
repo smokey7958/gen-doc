@@ -36,6 +36,7 @@ import {
 } from '../lib/markdown-commands';
 import { cn, slicePreview } from '../lib/utils';
 import { exitExportPdf, tryEnterExportPdf } from '../lib/export-pdf-busy';
+import { tImp } from '../lib/i18n';
 
 interface Props {
   tab: MarkdownTab;
@@ -682,7 +683,7 @@ export function MarkdownEditor({ tab }: Props): JSX.Element {
       try {
         const dataUrl = await fileToDataUrl(file);
         if (!dataUrl) {
-          notify('讀取貼上的圖片失敗', 'error');
+          notify(tImp('讀取貼上的圖片失敗', 'Failed to read pasted image'), 'error');
           return;
         }
         const v = viewRef.current;
@@ -695,7 +696,7 @@ export function MarkdownEditor({ tab }: Props): JSX.Element {
         applyImage(v, dataUrl, alt);
         v.focus();
       } catch (err) {
-        notify(`貼上失敗：${err instanceof Error ? err.message : String(err)}`, 'error');
+        notify(tImp(`貼上失敗：${err instanceof Error ? err.message : String(err)}`, `Paste failed: ${err instanceof Error ? err.message : String(err)}`), 'error');
       }
     };
 
@@ -722,7 +723,7 @@ export function MarkdownEditor({ tab }: Props): JSX.Element {
       }
       if (sawNonImageFile) {
         e.preventDefault();
-        notify('只能貼上圖片檔案', 'warning');
+        notify(tImp('只能貼上圖片檔案', 'Only image files can be pasted'), 'warning');
       }
     };
 
@@ -751,7 +752,7 @@ export function MarkdownEditor({ tab }: Props): JSX.Element {
         // dismissed with no toast. preventDefault here too so CodeMirror's
         // default-handler doesn't paste the file path as text into the buffer.
         e.preventDefault();
-        notify('只能拖入圖片檔案', 'warning');
+        notify(tImp('只能拖入圖片檔案', 'Only image files can be dropped'), 'warning');
         return;
       }
       e.preventDefault();
@@ -839,7 +840,7 @@ export function MarkdownEditor({ tab }: Props): JSX.Element {
       return;
     }
     if (!previewHtml) {
-      notify('預覽尚未準備好，請稍候再試', 'warning');
+      notify(tImp('預覽尚未準備好，請稍候再試', 'Preview not ready — please wait and try again'), 'warning');
       exitExportPdf();
       return;
     }
@@ -876,7 +877,7 @@ export function MarkdownEditor({ tab }: Props): JSX.Element {
         useWorkspace.getState().flashExport(fileName, res.filePath);
       }
     } catch (e) {
-      notify(`輸出 PDF 失敗：${(e as Error).message}`, 'error');
+      notify(tImp(`輸出 PDF 失敗：${(e as Error).message}`, `PDF export failed: ${(e as Error).message}`), 'error');
     } finally {
       exportPdfBusyRef.current = false;
       setExportPdfBusy(false);
@@ -1290,7 +1291,7 @@ function LinkInsertDialog({
             {url.startsWith('data:') && (
               <span
                 className="text-[10px] text-muted-foreground truncate"
-                title="已嵌入本機圖片（base64 data URL）"
+                title={tImp('已嵌入本機圖片（base64 data URL）', 'Local image embedded (base64 data URL)')}
               >
                 已嵌入本機圖片
               </span>
@@ -1476,7 +1477,7 @@ function OutlinePanel({
           PptxEditor.tsx near "投影片大綱". */}
       <div
         className="px-3 py-2 text-[10px] uppercase tracking-wider text-muted-foreground font-medium border-b"
-        title="↑/↓ 切換 · Home/End 跳到首/末"
+        title={tImp('↑/↓ 切換 · Home/End 跳到首/末', '↑/↓ to switch · Home/End to jump to first/last')}
       >
         大綱
       </div>

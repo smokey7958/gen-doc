@@ -1,6 +1,13 @@
 /**
  * Native application menu. Most actions are forwarded to the renderer over
  * dedicated channels so the React side owns the actual workspace state.
+ *
+ * R405 — bilingual menu. `buildAppMenu(recentFiles, locale)` takes an explicit
+ * locale ('zh' | 'en') and translates every visible label. The renderer's
+ * language selector + config.set({locale}) triggers rebuildAppMenu so the
+ * native menu re-renders without an app restart. Inline `t(zh, en)` keeps
+ * the original Traditional Chinese visible as living source of truth and
+ * pairs it with English next to the call site — same idiom as lib/i18n.ts.
  */
 
 import path from 'node:path';
@@ -27,10 +34,10 @@ function send(channel: string, ...args: unknown[]): void {
  * `&` in the synced root name (`OneDrive - Company & Co`), legitimate
  * Chinese / English-mixed names — would see the menu entry rendered with
  * the `&` missing AND an accidental Alt-<next-char> binding pointing at
- * 開啟最近 instead of whatever the user's app conventionally uses that
- * shortcut for. The tooltip (line 41 `toolTip: p`) carries the raw path
- * and is unaffected — only the menu label needs the escape because that's
- * the surface that goes through Electron's mnemonic parser.
+ * the recent file instead of whatever the user's app conventionally uses
+ * that shortcut for. The tooltip (line 41 `toolTip: p`) carries the raw
+ * path and is unaffected — only the menu label needs the escape because
+ * that's the surface that goes through Electron's mnemonic parser.
  *
  * Doubling `&` → `&&` is the canonical escape per Electron's MenuItem
  * docs ("To display a literal &, use && instead"). The literal `&&`
@@ -43,16 +50,24 @@ function displayPath(p: string): string {
   return trimmed.replace(/&/g, '&&');
 }
 
+type Locale = 'zh' | 'en';
+
+/** Bilingual label helper — same idiom as renderer's lib/i18n.ts:t(). */
+function t(locale: Locale, zh: string, en: string): string {
+  return locale === 'zh' ? zh : en;
+}
+
 /**
  * Build (or rebuild) the app menu. `recentFiles` is the most-recent-first
  * list of `.gd` paths that powers the File → 最近開啟 submenu. We rebuild
  * (not patch) because Electron menus are immutable once installed; the
- * caller invokes `rebuildAppMenu` after any open/save.
+ * caller invokes `rebuildAppMenu` after any open/save or locale change.
  */
-export function buildAppMenu(recentFiles: string[] = []): void {
+export function buildAppMenu(recentFiles: string[] = [], locale: Locale = 'en'): void {
+  const tt = (zh: string, en: string) => t(locale, zh, en);
   const recentSubmenu: MenuItemConstructorOptions[] =
     recentFiles.length === 0
-      ? [{ label: '（無）', enabled: false }]
+      ? [{ label: tt('（無）', '(None)'), enabled: false }]
       : [
           ...recentFiles.slice(0, 10).map<MenuItemConstructorOptions>((p) => ({
             label: displayPath(p),
@@ -61,7 +76,7 @@ export function buildAppMenu(recentFiles: string[] = []): void {
           })),
           { type: 'separator' },
           {
-            label: '清除最近開啟',
+            label: tt('清除最近開啟', 'Clear recent'),
             click: () => send('menu:clearRecent'),
           },
         ];
@@ -86,46 +101,46 @@ export function buildAppMenu(recentFiles: string[] = []): void {
         ]
       : []),
     {
-      label: '檔案',
+      label: tt('檔案', 'File'),
       submenu: [
         {
-          label: '新專案',
+          label: tt('新專案', 'New Project'),
           accelerator: 'CmdOrCtrl+N',
           click: () => send('menu:newProject'),
         },
         {
-          label: '開啟…',
+          label: tt('開啟…', 'Open…'),
           accelerator: 'CmdOrCtrl+O',
           click: () => send('menu:open'),
         },
         {
-          label: '開啟資料夾…',
+          label: tt('開啟資料夾…', 'Open Folder…'),
           accelerator: 'CmdOrCtrl+K CmdOrCtrl+O',
           click: () => send('menu:openFolder'),
         },
         {
-          label: '最近開啟',
+          label: tt('最近開啟', 'Open Recent'),
           submenu: recentSubmenu,
         },
         { type: 'separator' },
         {
-          label: '儲存',
+          label: tt('儲存', 'Save'),
           accelerator: 'CmdOrCtrl+S',
           click: () => send('menu:save'),
         },
         {
-          label: '另存新檔…',
+          label: tt('另存新檔…', 'Save As…'),
           accelerator: 'CmdOrCtrl+Shift+S',
           click: () => send('menu:saveAs'),
         },
         { type: 'separator' },
         {
-          label: '匯出目前頁籤…',
+          label: tt('匯出目前頁籤…', 'Export Current Tab…'),
           accelerator: 'CmdOrCtrl+E',
           click: () => send('menu:exportTab'),
         },
         {
-          label: '批次匯出多個頁籤…',
+          label: tt('批次匯出多個頁籤…', 'Batch Export Tabs…'),
           accelerator: 'CmdOrCtrl+Shift+E',
           click: () => send('menu:batchExport'),
         },
@@ -134,7 +149,7 @@ export function buildAppMenu(recentFiles: string[] = []): void {
       ],
     },
     {
-      label: '編輯',
+      label: tt('編輯', 'Edit'),
       submenu: [
         // `registerAccelerator: false` shows the "Ctrl+Z" hint in the menu
         // label but does NOT bind the keystroke — without this, the menu
@@ -146,13 +161,13 @@ export function buildAppMenu(recentFiles: string[] = []): void {
         // focus is inside any editor that owns its own undo stack. Clicking
         // the menu item still works (intentional invocation by the user).
         {
-          label: '復原',
+          label: tt('復原', 'Undo'),
           accelerator: 'CmdOrCtrl+Z',
           registerAccelerator: false,
           click: () => send('menu:undo'),
         },
         {
-          label: '重做',
+          label: tt('重做', 'Redo'),
           accelerator: 'CmdOrCtrl+Shift+Z',
           registerAccelerator: false,
           click: () => send('menu:redo'),
@@ -165,7 +180,7 @@ export function buildAppMenu(recentFiles: string[] = []): void {
       ],
     },
     {
-      label: '檢視',
+      label: tt('檢視', 'View'),
       submenu: [
         // Reload / forceReload / toggleDevTools are dev-only. In a packaged
         // build they're a user-facing footgun: clicking 重新整理 nukes
@@ -195,12 +210,12 @@ export function buildAppMenu(recentFiles: string[] = []): void {
       label: 'AI',
       submenu: [
         {
-          label: '聚焦 AI 對話框',
+          label: tt('聚焦 AI 對話框', 'Focus AI Input'),
           accelerator: 'CmdOrCtrl+L',
           click: () => send('menu:focusAI'),
         },
         {
-          label: '設定…',
+          label: tt('設定…', 'Settings…'),
           accelerator: 'CmdOrCtrl+,',
           click: () => send('menu:openSettings'),
         },
@@ -211,7 +226,7 @@ export function buildAppMenu(recentFiles: string[] = []): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-/** Convenience wrapper used by ipc.ts after a recent-files mutation. */
-export function rebuildAppMenu(recentFiles: string[]): void {
-  buildAppMenu(recentFiles);
+/** Convenience wrapper used by ipc.ts after a recent-files / locale mutation. */
+export function rebuildAppMenu(recentFiles: string[], locale: Locale = 'en'): void {
+  buildAppMenu(recentFiles, locale);
 }

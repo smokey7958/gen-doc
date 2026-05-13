@@ -19,6 +19,15 @@ let mainWindow: BrowserWindow | null = null;
 let rendererDirty = false;
 let isQuitting = false;
 
+// R405 — bilingual helpers for main-process modal strings (close prompt,
+// app.confirm dialog). Locale state lives in ./locale.ts so ipc.ts can
+// update it on config.set({locale}) without an import-cycle through main.ts.
+import { getMainLocale, setMainLocale } from './locale';
+
+function tMain(zh: string, en: string): string {
+  return getMainLocale() === 'zh' ? zh : en;
+}
+
 const isDev = !app.isPackaged;
 const VITE_DEV_SERVER_URL = process.env['ELECTRON_RENDERER_URL'] ?? 'http://localhost:5173';
 
@@ -119,14 +128,18 @@ async function createMainWindow(): Promise<void> {
   mainWindow.on('close', (event) => {
     if (isQuitting || !rendererDirty || !mainWindow) return;
     event.preventDefault();
+    // R405 — read the shared locale module set on boot (and re-set
+    // whenever config.set({locale}) fires; see ipc.ts patch handler).
+    // Avoids an async await inside this sync-shaped close handler.
+    const tt = (zh: string, en: string) => tMain(zh, en);
     const choice = dialog.showMessageBoxSync(mainWindow, {
       type: 'warning',
-      buttons: ['儲存', '不儲存', '取消'],
+      buttons: [tt('儲存', 'Save'), tt('不儲存', "Don't Save"), tt('取消', 'Cancel')],
       defaultId: 0,
       cancelId: 2,
       title: 'Gen Doc',
-      message: '目前的變更尚未儲存',
-      detail: '是否要在離開前儲存？',
+      message: tt('目前的變更尚未儲存', 'You have unsaved changes'),
+      detail: tt('是否要在離開前儲存？', 'Save before quitting?'),
       noLink: true,
     });
     if (choice === 0) {
@@ -218,9 +231,13 @@ ipcMain.on(IPC.app.setDirty, (_e, dirty: boolean) => {
 // belt-and-braces guarantee.
 ipcMain.handle(IPC.app.confirm, async (_e, message: string) => {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
+  // R405 — bilingual confirm button labels via shared locale module.
+  // `message` is already locale-resolved by the caller (renderer uses
+  // tImp() at the callsite); only the OK / Cancel buttons need
+  // translation here.
   const choice = dialog.showMessageBoxSync(mainWindow, {
     type: 'warning',
-    buttons: ['確定', '取消'],
+    buttons: [tMain('確定', 'OK'), tMain('取消', 'Cancel')],
     defaultId: 0,
     cancelId: 1,
     title: 'Gen Doc',
@@ -260,8 +277,20 @@ app.whenReady().then(async () => {
   registerIpcHandlers();
   // Seed the menu with the persisted recent-files list so it's populated on
   // the very first paint, not only after the user opens/saves something.
+  // R405 — also resolve the effective UI locale: user preference > OS locale.
+  // `app.getLocale()` returns Chromium's locale string ('zh-TW' / 'en-US' /
+  // ...); anything starting with 'zh' → Chinese menu, everything else
+  // → English. Renderer mirrors this resolution in lib/i18n.ts.
   const cfg = await loadConfig();
-  buildAppMenu(cfg.recentFiles);
+  const osLocale = app.getLocale();
+  const effectiveLocale: 'zh' | 'en' =
+    cfg.locale ?? (osLocale.toLowerCase().startsWith('zh') ? 'zh' : 'en');
+  // R405 — seed the shared locale module so the close-prompt below renders
+  // in the user's language. ipc.ts's config.set handler updates the same
+  // module on every locale change so the next prompt picks it up without
+  // restart.
+  setMainLocale(effectiveLocale);
+  buildAppMenu(cfg.recentFiles, effectiveLocale);
   await createMainWindow();
 
   app.on('activate', async () => {

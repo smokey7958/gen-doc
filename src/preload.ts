@@ -20,6 +20,7 @@ const bridge: GenDocBridge = {
     saveAndQuitResult: (ok) => {
       ipcRenderer.send(IPC.app.saveAndQuitResult, ok);
     },
+    getOsLocale: () => ipcRenderer.invoke(IPC.app.getOsLocale),
   },
   workspace: {
     open: () => ipcRenderer.invoke(IPC.workspace.open),

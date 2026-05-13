@@ -36,6 +36,13 @@ import {
   getConfigDir,
 } from './storage/config';
 import { rebuildAppMenu } from './menu';
+import { setMainLocale, getMainLocale } from './locale';
+
+// R405 — bilingual helper for OS-dialog titles (showOpenDialog / showSaveDialog).
+// Reads the shared locale module set by main.ts boot + config.set handler.
+function tIpc(zh: string, en: string): string {
+  return getMainLocale() === 'zh' ? zh : en;
+}
 import {
   appendMessage,
   closeDatabase,
@@ -60,11 +67,15 @@ export function registerIpcHandlers(): void {
       configDir: getConfigDir(),
     };
   });
+  // R405 — return Chromium's OS locale ('zh-TW' / 'en-US' / etc.) so the
+  // renderer can pick a default UI language when UserConfig.locale is null.
+  // See lib/i18n.ts:resolveOsLocale for the mapping logic.
+  ipcMain.handle(IPC.app.getOsLocale, async () => app.getLocale());
 
   // ── workspace ────────────────────────────────────────────────────────
   ipcMain.handle(IPC.workspace.open, async () => {
     const result = await dialog.showOpenDialog({
-      title: '開啟 .gd 檔案',
+      title: tIpc('開啟 .gd 檔案', 'Open .gd file'),
       filters: [{ name: 'Gen Doc workspace', extensions: ['gd'] }],
       properties: ['openFile'],
     });
@@ -134,7 +145,7 @@ export function registerIpcHandlers(): void {
   // ── fs (file explorer) ───────────────────────────────────────────────
   ipcMain.handle(IPC.fs.pickDirectory, async (): Promise<string | null> => {
     const result = await dialog.showOpenDialog({
-      title: '選擇資料夾',
+      title: tIpc('選擇資料夾', 'Pick a folder'),
       properties: ['openDirectory'],
     });
     if (result.canceled || result.filePaths.length === 0) return null;
@@ -219,9 +230,19 @@ export function registerIpcHandlers(): void {
     //       the next config change rebuilds the menu fresh — degraded
     //       state is just a stale 最近開啟 submenu until the next
     //       open / save.
-    if (patch && 'recentFiles' in patch) {
+    // R405 — also rebuild on locale change so the OS menu re-paints in the
+    // new language without an app restart. Resolve effective locale the
+    // same way main.ts boot did (user pref > OS locale > 'en').
+    if (patch && ('recentFiles' in patch || 'locale' in patch)) {
       try {
-        rebuildAppMenu(updated.recentFiles);
+        const osLocale = app.getLocale();
+        const effectiveLocale: 'zh' | 'en' =
+          updated.locale ?? (osLocale.toLowerCase().startsWith('zh') ? 'zh' : 'en');
+        rebuildAppMenu(updated.recentFiles, effectiveLocale);
+        // R405 — propagate to the shared locale module so the close-prompt
+        // and confirm dialog in main.ts render in the new language without
+        // an app restart.
+        setMainLocale(effectiveLocale);
       } catch {
         /* swallow — see R242 doc-block above. */
       }
@@ -263,7 +284,7 @@ export function registerIpcHandlers(): void {
 
 async function invokeSaveAs(req: SaveWorkspaceRequest) {
   const result = await dialog.showSaveDialog({
-    title: '另存新檔',
+    title: tIpc('另存新檔', 'Save As'),
     defaultPath: req.filePath
       ? path.basename(req.filePath)
       : `${req.manifest.title || '未命名'}.gd`,
@@ -312,7 +333,7 @@ async function invokeExportTab(req: ExportTabRequest) {
   const dot = `.${req.ext}`;
   const defaultName = base.toLowerCase().endsWith(dot) ? base : `${base}${dot}`;
   const result = await dialog.showSaveDialog({
-    title: `匯出為 .${req.ext}`,
+    title: tIpc(`匯出為 .${req.ext}`, `Export as .${req.ext}`),
     defaultPath: defaultName,
     filters: [filter],
   });
@@ -350,7 +371,10 @@ async function invokeExportTab(req: ExportTabRequest) {
 async function invokeExportTabs(req: ExportTabsRequest): Promise<ExportTabsResult | null> {
   if (req.tabs.length === 0) return null;
   const pick = await dialog.showOpenDialog({
-    title: `批次匯出 ${req.tabs.length} 個頁籤到資料夾`,
+    title: tIpc(
+      `批次匯出 ${req.tabs.length} 個頁籤到資料夾`,
+      `Batch export ${req.tabs.length} tab${req.tabs.length === 1 ? '' : 's'} to a folder`,
+    ),
     properties: ['openDirectory', 'createDirectory'],
     buttonLabel: '匯出到此資料夾',
   });
@@ -451,7 +475,7 @@ async function invokeExportMarkdownPdf(
   const base = safeFileName(req.suggestedName, '未命名');
   const defaultName = base.toLowerCase().endsWith('.pdf') ? base : `${base}.pdf`;
   const result = await dialog.showSaveDialog({
-    title: '輸出為 PDF',
+    title: tIpc('輸出為 PDF', 'Export as PDF'),
     defaultPath: defaultName,
     filters: [{ name: 'PDF', extensions: ['pdf'] }],
   });
@@ -611,7 +635,12 @@ async function pushRecent(filePath: string): Promise<void> {
     return; // already at the top, nothing changed
   }
   const updated = await patchConfig({ recentFiles: next });
-  rebuildAppMenu(updated.recentFiles);
+  // R405 — pass current effective locale so the rebuilt menu stays in the
+  // user's language. Same resolution chain as main.ts boot.
+  const osLocale = app.getLocale();
+  const effectiveLocale: 'zh' | 'en' =
+    updated.locale ?? (osLocale.toLowerCase().startsWith('zh') ? 'zh' : 'en');
+  rebuildAppMenu(updated.recentFiles, effectiveLocale);
 }
 
 /** Run on app startup: housekeeping for temp dirs from prior crashes. */

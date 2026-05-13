@@ -11,19 +11,32 @@ import { Activity, AlertCircle, Check, Download, FileText, Hash, Loader2, Sparkl
 import { useAI } from '../store/ai';
 import { useWorkspace } from '../store/workspace';
 import { SUPPORTED_MODELS } from '../types/ai';
+import { useLocale } from '../lib/i18n';
 
 /**
  * Pretty-print "saved 3s ago" / "saved 2 minutes ago" relative time. We
  * only show seconds and minutes — a save older than an hour stops being
  * an interesting status for this bar.
+ *
+ * R405 — bilingual. `locale` arg lets the same helper produce either
+ * Traditional Chinese or English copy. Called from StatusBar where the
+ * locale is read once via useLocale subscription so re-renders flip
+ * language together with the rest of the chrome.
  */
-function formatRelative(ts: number, now: number): string {
+function formatRelative(ts: number, now: number, locale: 'zh' | 'en'): string {
   const delta = Math.max(0, Math.floor((now - ts) / 1000));
-  if (delta < 5) return '剛剛儲存';
-  if (delta < 60) return `${delta} 秒前儲存`;
+  if (locale === 'zh') {
+    if (delta < 5) return '剛剛儲存';
+    if (delta < 60) return `${delta} 秒前儲存`;
+    const min = Math.floor(delta / 60);
+    if (min < 60) return `${min} 分鐘前儲存`;
+    return '已儲存';
+  }
+  if (delta < 5) return 'Just saved';
+  if (delta < 60) return `Saved ${delta}s ago`;
   const min = Math.floor(delta / 60);
-  if (min < 60) return `${min} 分鐘前儲存`;
-  return '已儲存';
+  if (min < 60) return `Saved ${min}m ago`;
+  return 'Saved';
 }
 
 export function StatusBar(): JSX.Element {
@@ -87,8 +100,13 @@ export function StatusBar(): JSX.Element {
     : active && 'data' in active
       ? active.data.byteLength
       : 0;
+  // R405 — bilingual labels. Read locale once at render so the StatusBar
+  // re-renders together with the rest of the chrome on language toggle.
+  const locale = useLocale((s) => s.locale);
   const charLabel = isTextTab
-    ? `${charCount.toLocaleString()} 字元`
+    ? locale === 'zh'
+      ? `${charCount.toLocaleString()} 字元`
+      : `${charCount.toLocaleString()} chars`
     : `${(charCount / 1024).toFixed(1)} KB`;
   // The visible label flips meaning by tab type — `字元` for text tabs
   // (Markdown / HTML, string.length including whitespace + markup syntax)
@@ -104,8 +122,12 @@ export function StatusBar(): JSX.Element {
   // tooltip vocabulary mirrors the token-usage tooltip's "explain what each
   // bucket means" pattern.
   const charTitle = isTextTab
-    ? '目前文件字元數（含空白與標記語法）'
-    : '目前檔案內容大小（記憶體中的位元組數）';
+    ? locale === 'zh'
+      ? '目前文件字元數（含空白與標記語法）'
+      : 'Current document character count (includes whitespace + markup syntax)'
+    : locale === 'zh'
+      ? '目前檔案內容大小（記憶體中的位元組數）'
+      : 'Current file content size (bytes in memory)';
 
   // Cache hit ratio = cacheRead / total-input-tokens. Anthropic splits each
   // request's input into three buckets: regular `inputTokens`,
@@ -126,7 +148,7 @@ export function StatusBar(): JSX.Element {
     <div className="flex items-center h-6 px-3 border-t bg-secondary/30 text-[11px] text-muted-foreground gap-4">
       <span className="flex items-center gap-1">
         <FileText className="h-3 w-3" />
-        {tabs.length} 個頁籤
+        {locale === 'zh' ? `${tabs.length} 個頁籤` : `${tabs.length} tab${tabs.length === 1 ? '' : 's'}`}
       </span>
       {active && (
         <span className="flex items-center gap-1" title={charTitle}>
@@ -142,16 +164,16 @@ export function StatusBar(): JSX.Element {
       {saveState === 'saving' && (
         <span className="flex items-center gap-1 text-primary">
           <Loader2 className="h-3 w-3 animate-spin" />
-          儲存中…
+          {locale === 'zh' ? '儲存中…' : 'Saving…'}
         </span>
       )}
       {saveState === 'error' && (
         <span
           className="flex items-center gap-1 text-destructive"
-          title={saveError ?? '未知錯誤'}
+          title={saveError ?? (locale === 'zh' ? '未知錯誤' : 'Unknown error')}
         >
           <AlertCircle className="h-3 w-3" />
-          儲存失敗
+          {locale === 'zh' ? '儲存失敗' : 'Save failed'}
         </span>
       )}
       {saveState !== 'saving' && saveState !== 'error' && lastSavedAt !== null && (
@@ -160,7 +182,7 @@ export function StatusBar(): JSX.Element {
           title={new Date(lastSavedAt).toLocaleString()}
         >
           <Check className={`h-3 w-3 ${saveState === 'success' ? 'text-emerald-500' : ''}`} />
-          {formatRelative(lastSavedAt, now)}
+          {formatRelative(lastSavedAt, now, locale)}
         </span>
       )}
       {/* Export flash — auto-clears 5s after the export resolves. The store's
@@ -176,16 +198,20 @@ export function StatusBar(): JSX.Element {
           // off-screen on long paths. Falls back to fileName when no path
           // is recorded (legacy callers, or future flash sources without
           // a known disk location).
-          title={`已匯出至 ${exportFlash.filePath ?? exportFlash.fileName}`}
+          title={
+            locale === 'zh'
+              ? `已匯出至 ${exportFlash.filePath ?? exportFlash.fileName}`
+              : `Exported to ${exportFlash.filePath ?? exportFlash.fileName}`
+          }
         >
           <Download className="h-3 w-3" />
-          已匯出 {exportFlash.fileName}
+          {locale === 'zh' ? '已匯出' : 'Exported'} {exportFlash.fileName}
         </span>
       )}
       <div className="flex-1" />
       <span
         className={`flex items-center gap-1 ${streaming ? 'text-primary' : ''}`}
-        title="目前選擇的 AI 模型"
+        title={locale === 'zh' ? '目前選擇的 AI 模型' : 'Active AI model'}
       >
         <Sparkles className={`h-3 w-3 ${streaming ? 'animate-pulse' : ''}`} />
         {modelLabel}

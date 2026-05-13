@@ -66,6 +66,7 @@ import { htmlToDocxBlocks } from '../lib/html-to-docx';
 import { RichBlock } from './RichBlock';
 import { FindReplaceDialog, type SearchSegment } from './FindReplaceDialog';
 import { GoToDialog } from './GoToDialog';
+import { useT, tImp } from '../lib/i18n';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -86,10 +87,10 @@ const PAGE_PRESETS: { id: string; label: string; w: number; h: number }[] = [
 ];
 
 /** Margin presets — also in twips. 1440 twips = 1 inch. */
-const MARGIN_PRESETS: { id: string; label: string; v: number }[] = [
-  { id: 'narrow', label: '窄 (0.5")', v: 720 },
-  { id: 'normal', label: '標準 (1")', v: 1440 },
-  { id: 'wide', label: '寬 (1.5")', v: 2160 },
+const MARGIN_PRESETS: { id: string; labelZh: string; labelEn: string; v: number }[] = [
+  { id: 'narrow', labelZh: '窄 (0.5")', labelEn: 'Narrow (0.5")', v: 720 },
+  { id: 'normal', labelZh: '標準 (1")', labelEn: 'Normal (1")', v: 1440 },
+  { id: 'wide', labelZh: '寬 (1.5")', labelEn: 'Wide (1.5")', v: 2160 },
 ];
 
 interface Props {
@@ -105,7 +106,7 @@ const KIND_CYCLE: DocxBlockKind[] = [
   'numbered',
 ];
 
-const KIND_LABEL: Record<DocxBlockKind, string> = {
+const KIND_LABEL_ZH: Record<DocxBlockKind, string> = {
   paragraph: '段落',
   heading1: 'H1',
   heading2: 'H2',
@@ -118,6 +119,31 @@ const KIND_LABEL: Record<DocxBlockKind, string> = {
   table: '表格',
   image: '圖片',
 };
+const KIND_LABEL_EN: Record<DocxBlockKind, string> = {
+  paragraph: 'Paragraph',
+  heading1: 'H1',
+  heading2: 'H2',
+  heading3: 'H3',
+  heading4: 'H4',
+  heading5: 'H5',
+  heading6: 'H6',
+  bullet: '• List',
+  numbered: '1. List',
+  table: 'Table',
+  image: 'Image',
+};
+function kindLabel(k: DocxBlockKind): string {
+  return tImp(KIND_LABEL_ZH[k], KIND_LABEL_EN[k]);
+}
+// Backwards-compatible alias for the old name — same proxy-style lookup that
+// reads the current locale on each access. Kept so the many existing
+// `KIND_LABEL[xxx]` callsites in this file continue to work without per-site
+// rewrites.
+const KIND_LABEL: Record<DocxBlockKind, string> = new Proxy({} as Record<DocxBlockKind, string>, {
+  get(_, p: string) {
+    return kindLabel(p as DocxBlockKind);
+  },
+});
 
 let nextLocalId = 0;
 /**
@@ -150,6 +176,7 @@ function genId(): string {
 }
 
 export function DocxEditor({ tab }: Props): JSX.Element {
+  const t = useT();
   const patchTab = useWorkspace((s) => s.patchTab);
   const markTabDirty = useWorkspace((s) => s.markTabDirty);
   const [model, setModel, undoApi] = useUndoableState<DocxModel | null>(null);
@@ -642,7 +669,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
       buf = new Uint8Array(await file.arrayBuffer());
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      notify(`插入圖片失敗：${msg}`, 'error');
+      notify(tImp(`插入圖片失敗：${msg}`, `Failed to insert image: ${msg}`), 'error');
       return;
     }
     const dataUrl = `data:${mimeForKind(mediaType)};base64,${uint8ToBase64(buf)}`;
@@ -787,7 +814,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
           level: Number(m[1]),
           // Empty heading still gets an entry so the user sees structure;
           // we just label it "(無標題)" rather than rendering an empty row.
-          text: b.text.trim() || '(無標題)',
+          text: b.text.trim() || tImp('(無標題)', '(Untitled)'),
           index: idx,
         });
       }
@@ -1063,7 +1090,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
       }
       if (sawNonImageFile) {
         e.preventDefault();
-        notify('只能貼上圖片檔案', 'warning');
+        notify(tImp('只能貼上圖片檔案', 'Only image files can be pasted'), 'warning');
       }
     };
     root.addEventListener('paste', onPaste);
@@ -1166,14 +1193,14 @@ export function DocxEditor({ tab }: Props): JSX.Element {
   if (loading) {
     return (
       <div className="h-full w-full flex items-center justify-center text-muted-foreground text-sm">
-        正在解析 docx…
+        {t('正在解析 docx…', 'Parsing docx…')}
       </div>
     );
   }
   if (error || !model) {
     return (
       <div className="h-full w-full flex items-center justify-center text-destructive text-sm p-8 text-center">
-        無法解析 docx：{error ?? '未知錯誤'}
+        {t('無法解析 docx：', 'Failed to parse docx: ')}{error ?? t('未知錯誤', 'Unknown error')}
       </div>
     );
   }
@@ -1588,7 +1615,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
           // PptxEditor.tsx:880 + MarkdownEditor.tsx:628 carry the same fix.
           // Tier + vocabulary mirror FileExplorer.tsx:700 (`不支援的檔案類型`)
           // — same warning level, same "tell the user what's wrong" stance.
-          notify('只能拖入圖片檔案', 'warning');
+          notify(tImp('只能拖入圖片檔案', 'Only image files can be dropped'), 'warning');
           return;
         }
         // Drop precision (Round 74): anchor to the block under the cursor
@@ -1688,11 +1715,11 @@ export function DocxEditor({ tab }: Props): JSX.Element {
           <button
             type="button"
             onClick={() => setPreviewMode(false)}
-            title="退出預覽 (Esc)"
+            title={tImp('退出預覽 (Esc)', 'Exit preview (Esc)')}
             className="absolute top-3 right-3 z-40 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-background/95 border border-border shadow-md text-xs hover:bg-secondary transition-colors"
           >
             <Eye className="h-3.5 w-3.5" />
-            <span>預覽中 — 點擊或按 Esc 結束</span>
+            <span>{t('預覽中 — 點擊或按 Esc 結束', 'Previewing — click or press Esc to exit')}</span>
           </button>
         )}
         {/* The desk surrounding the white paper. Pinned to zinc-200 always —
@@ -1757,7 +1784,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
           focusNonce={gotoFocusNonce}
           onClose={() => setGotoOpen(false)}
           max={model.blocks.length}
-          label="跳到第幾段？"
+          label={t('跳到第幾段？', 'Go to which paragraph?')}
           onJump={(oneBased) => {
             const target = model.blocks[oneBased - 1];
             // Reuse the heading-jump path so highlight + smooth-scroll behave
@@ -1822,7 +1849,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
                   removeBlocks(ids);
                 }}
                 className="px-1.5 py-0.5 rounded text-destructive hover:text-destructive hover:bg-destructive/10"
-                title="刪除全部選取的段落 (Delete)"
+                title={tImp('刪除全部選取的段落 (Delete)', 'Delete all selected paragraphs (Delete)')}
               >
                 刪除
               </button>
@@ -1830,7 +1857,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
                 type="button"
                 onClick={() => setSelectedBlockIds(new Set())}
                 className="px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-secondary"
-                title="取消選取 (Esc)"
+                title={tImp('取消選取 (Esc)', 'Clear selection (Esc)')}
               >
                 取消
               </button>
@@ -1865,7 +1892,10 @@ export function DocxEditor({ tab }: Props): JSX.Element {
                 // Return an inline error so the dialog stays open with
                 // a red-bordered message; mirrors the post-R335 protocol
                 // where the dialog displays whatever caller returns.
-                return '解析後沒有任何可插入的內容（Markdown 可能只含 horizontal rules / 空白）';
+                return tImp(
+                  '解析後沒有任何可插入的內容（Markdown 可能只含 horizontal rules / 空白）',
+                  'Nothing to insert after parsing (Markdown may contain only horizontal rules / whitespace)',
+                );
               }
               insertBlocksAfter(mdInsertDialog.anchorBlockId, fresh);
               setMdInsertDialog(null);
@@ -1894,7 +1924,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
                 // the R334 no-content path). Prefix「HTML 解析失敗：」
                 // here so it still reads naturally for the genuine parse-
                 // error case.
-                return `HTML 解析失敗：${parseError}`;
+                return tImp(`HTML 解析失敗：${parseError}`, `HTML parse failed: ${parseError}`);
               }
               if (fresh.length === 0) {
                 // R334 — surface as an inline error and KEEP THE DIALOG OPEN.
@@ -1920,7 +1950,10 @@ export function DocxEditor({ tab }: Props): JSX.Element {
                 // dialog open with the message painted inline, so the
                 // user can either edit the source to add real content
                 // or hit Esc to cancel knowingly.
-                return '解析後沒有任何可插入的內容（HTML 只含 script / style / 註解 / 空標籤）';
+                return tImp(
+                  '解析後沒有任何可插入的內容（HTML 只含 script / style / 註解 / 空標籤）',
+                  'Nothing to insert after parsing (HTML contains only script / style / comments / empty tags)',
+                );
               }
               insertBlocksAfter(htmlInsertDialog.anchorBlockId, fresh);
               setHtmlInsertDialog(null);
@@ -2141,7 +2174,7 @@ function DocxNavPanel({
           rationale at PptxEditor.tsx near "投影片大綱". */}
       <div
         className="px-3 py-2 text-[10px] uppercase tracking-wider text-muted-foreground font-medium border-b"
-        title="↑/↓ 切換 · Home/End 跳到首/末"
+        title={tImp('↑/↓ 切換 · Home/End 跳到首/末', '↑/↓ to switch · Home/End to jump to first/last')}
       >
         導覽窗格
       </div>
@@ -2258,11 +2291,15 @@ function PageSheet({
 }
 
 function Banner(): JSX.Element {
+  const t = useT();
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-100 border-b border-amber-300 text-amber-800">
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
       <span>
-        Word MVP 編輯：粗體 / 斜體 / 底線可對選取範圍套用；對齊 / 字色 / 字型仍以整段為單位。圖片、表格的部分樣式在 round-trip 會被簡化。
+        {t(
+          'Word MVP 編輯：粗體 / 斜體 / 底線可對選取範圍套用；對齊 / 字色 / 字型仍以整段為單位。圖片、表格的部分樣式在 round-trip 會被簡化。',
+          'Word MVP editor: bold / italic / underline apply to selections; alignment / color / font are per-paragraph. Some image and table styling is simplified during round-trip.',
+        )}
       </span>
     </div>
   );
@@ -2322,8 +2359,10 @@ function FormatToolbar({
   onOpenFind: () => void;
   onOpenGoto: () => void;
 }): JSX.Element {
+  const t = useT();
   const disabled = !block;
   const style = block?.style ?? {};
+  const tDisabled = t('請先點選一個段落', 'Select a paragraph first');
   // Wrapper no longer dims the whole bar when no block is active. Previously
   // we set `opacity-50` on the container, but several controls
   // (nav-pane toggle / image insert / page settings / find / print preview)
@@ -2340,7 +2379,7 @@ function FormatToolbar({
       <ToolbarBtn
         active={navOpen}
         disabled={false}
-        title={navOpen ? '隱藏導覽窗格' : '顯示導覽窗格 — 文件大綱'}
+        title={navOpen ? t('隱藏導覽窗格', 'Hide navigation pane') : t('顯示導覽窗格 — 文件大綱', 'Show navigation pane — document outline')}
         onClick={onToggleNav}
       >
         <List className="h-3.5 w-3.5" />
@@ -2362,34 +2401,34 @@ function FormatToolbar({
           label assumes a selection exists). Extending the same flip to the
           inline-style / link / align buttons closes the only remaining set
           of disable-but-don't-explain holes in this toolbar. */}
-      <ToolbarBtn active={!!style.bold} disabled={disabled} title={disabled ? '請先點選一個段落' : '粗體 (Ctrl+B)'} onClick={() => onToggleStyle('bold')}>
+      <ToolbarBtn active={!!style.bold} disabled={disabled} title={disabled ? tDisabled : t('粗體 (Ctrl+B)', 'Bold (Ctrl+B)')} onClick={() => onToggleStyle('bold')}>
         <Bold className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={!!style.italic} disabled={disabled} title={disabled ? '請先點選一個段落' : '斜體 (Ctrl+I)'} onClick={() => onToggleStyle('italic')}>
+      <ToolbarBtn active={!!style.italic} disabled={disabled} title={disabled ? tDisabled : t('斜體 (Ctrl+I)', 'Italic (Ctrl+I)')} onClick={() => onToggleStyle('italic')}>
         <Italic className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={!!style.underline} disabled={disabled} title={disabled ? '請先點選一個段落' : '底線 (Ctrl+U)'} onClick={() => onToggleStyle('underline')}>
+      <ToolbarBtn active={!!style.underline} disabled={disabled} title={disabled ? tDisabled : t('底線 (Ctrl+U)', 'Underline (Ctrl+U)')} onClick={() => onToggleStyle('underline')}>
         <Underline className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <ToolbarBtn
         active={!!block?.link}
         disabled={disabled}
-        title={disabled ? '請先點選一個段落' : block?.link ? `編輯連結：${block.link}` : '插入連結'}
+        title={disabled ? tDisabled : block?.link ? t(`編輯連結：${block.link}`, `Edit link: ${block.link}`) : t('插入連結', 'Insert link')}
         onClick={onToggleLink}
       >
         <LinkIcon className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <Divider />
-      <ToolbarBtn active={block?.align === 'left'} disabled={disabled} title={disabled ? '請先點選一個段落' : '靠左對齊'} onClick={() => onSetAlign('left')}>
+      <ToolbarBtn active={block?.align === 'left'} disabled={disabled} title={disabled ? tDisabled : t('靠左對齊', 'Align left')} onClick={() => onSetAlign('left')}>
         <AlignLeft className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={block?.align === 'center'} disabled={disabled} title={disabled ? '請先點選一個段落' : '置中對齊'} onClick={() => onSetAlign('center')}>
+      <ToolbarBtn active={block?.align === 'center'} disabled={disabled} title={disabled ? tDisabled : t('置中對齊', 'Align center')} onClick={() => onSetAlign('center')}>
         <AlignCenter className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={block?.align === 'right'} disabled={disabled} title={disabled ? '請先點選一個段落' : '靠右對齊'} onClick={() => onSetAlign('right')}>
+      <ToolbarBtn active={block?.align === 'right'} disabled={disabled} title={disabled ? tDisabled : t('靠右對齊', 'Align right')} onClick={() => onSetAlign('right')}>
         <AlignRight className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      <ToolbarBtn active={block?.align === 'justify'} disabled={disabled} title={disabled ? '請先點選一個段落' : '兩端對齊'} onClick={() => onSetAlign('justify')}>
+      <ToolbarBtn active={block?.align === 'justify'} disabled={disabled} title={disabled ? tDisabled : t('兩端對齊', 'Justify')} onClick={() => onSetAlign('justify')}>
         <AlignJustify className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <Divider />
@@ -2406,7 +2445,7 @@ function FormatToolbar({
           voice across every disabled-when-no-block control. */}
       <span className="relative inline-flex items-center">
         <label
-          title={disabled ? '請先點選一個段落' : '文字顏色'}
+          title={disabled ? tDisabled : t('文字顏色', 'Text color')}
           // Don't blur the active block on label-mousedown. The native color
           // input *will* still grab focus when its picker opens (browser-
           // managed), but `setColor` calls `refocusActiveBlock` to put it
@@ -2436,7 +2475,7 @@ function FormatToolbar({
         {style.color ? (
           <button
             type="button"
-            title={disabled ? '請先點選一個段落' : '清除文字顏色'}
+            title={disabled ? tDisabled : t('清除文字顏色', 'Clear text color')}
             onMouseDown={(e) => e.preventDefault()}
             onClick={onClearColor}
             disabled={disabled}
@@ -2457,10 +2496,10 @@ function FormatToolbar({
           'h-7 text-xs rounded border border-border bg-background px-1.5 ml-1 max-w-[170px]',
           disabled && 'cursor-not-allowed',
         )}
-        title={disabled ? '請先點選一個段落' : '字型'}
+        title={disabled ? tDisabled : t('字型', 'Font')}
         style={style.fontFamily ? { fontFamily: style.fontFamily } : undefined}
       >
-        <option value="">預設字型</option>
+        <option value="">{t('預設字型', 'Default font')}</option>
         {FONT_FAMILIES.map((f) => (
           <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>
             {f.label}
@@ -2479,9 +2518,9 @@ function FormatToolbar({
           'h-7 text-xs rounded border border-border bg-background px-1.5',
           disabled && 'cursor-not-allowed',
         )}
-        title={disabled ? '請先點選一個段落' : '字級 (pt)'}
+        title={disabled ? tDisabled : t('字級 (pt)', 'Font size (pt)')}
       >
-        <option value="">預設</option>
+        <option value="">{t('預設', 'Default')}</option>
         {DOCX_FONT_SIZES_PT.map((s) => (
           <option key={s} value={s}>{s} pt</option>
         ))}
@@ -2497,7 +2536,7 @@ function FormatToolbar({
           than blocking the click. */}
       <ToolbarBtn
         disabled={disabled}
-        title={disabled ? '請先點選一個段落' : '在此段後插入表格'}
+        title={disabled ? tDisabled : t('在此段後插入表格', 'Insert table after this paragraph')}
         onClick={onInsertTable}
       >
         <Rows className="h-3.5 w-3.5" />
@@ -2519,8 +2558,8 @@ function FormatToolbar({
       <ToolbarBtn
         disabled={false}
         title={disabled
-          ? '於文件結尾插入圖片(PNG / JPG / GIF / BMP)'
-          : '在此段後插入圖片(PNG / JPG / GIF / BMP)'}
+          ? t('於文件結尾插入圖片(PNG / JPG / GIF / BMP)', 'Insert image at end of document (PNG / JPG / GIF / BMP)')
+          : t('在此段後插入圖片(PNG / JPG / GIF / BMP)', 'Insert image after this paragraph (PNG / JPG / GIF / BMP)')}
         onClick={onInsertImage}
       >
         <ImageIcon className="h-3.5 w-3.5" />
@@ -2531,8 +2570,8 @@ function FormatToolbar({
       <ToolbarBtn
         disabled={false}
         title={disabled
-          ? '於文件結尾插入 Markdown 內容'
-          : '在此段後插入 Markdown 內容'}
+          ? t('於文件結尾插入 Markdown 內容', 'Insert Markdown at end of document')
+          : t('在此段後插入 Markdown 內容', 'Insert Markdown after this paragraph')}
         onClick={onInsertMarkdown}
       >
         <FileCode className="h-3.5 w-3.5" />
@@ -2543,8 +2582,8 @@ function FormatToolbar({
       <ToolbarBtn
         disabled={false}
         title={disabled
-          ? '於文件結尾插入 HTML 內容'
-          : '在此段後插入 HTML 內容'}
+          ? t('於文件結尾插入 HTML 內容', 'Insert HTML at end of document')
+          : t('在此段後插入 HTML 內容', 'Insert HTML after this paragraph')}
         onClick={onInsertHtml}
       >
         <Code2 className="h-3.5 w-3.5" />
@@ -2562,7 +2601,7 @@ function FormatToolbar({
           toolbar matches MarkdownToolbar and gives users a discoverable way
           to open it. Stays enabled regardless of `disabled`: search across
           the whole document is meaningful even with no active block. */}
-      <ToolbarBtn disabled={false} title="尋找與取代 (Ctrl+F)" onClick={onOpenFind}>
+      <ToolbarBtn disabled={false} title={t('尋找與取代 (Ctrl+F)', 'Find & Replace (Ctrl+F)')} onClick={onOpenFind}>
         <Search className="h-3.5 w-3.5" />
       </ToolbarBtn>
       {/* Go to paragraph — Ctrl+G is bound at line 778-799 but had zero UI
@@ -2580,14 +2619,14 @@ function FormatToolbar({
           which matches the dialog's "跳到第幾段？" label (line 1477). Stays
           enabled regardless of `disabled` — jumping to a paragraph is exactly
           how a user with no active block reaches one. */}
-      <ToolbarBtn disabled={false} title="跳至段落… (Ctrl+G)" onClick={onOpenGoto}>
+      <ToolbarBtn disabled={false} title={t('跳至段落… (Ctrl+G)', 'Go to paragraph… (Ctrl+G)')} onClick={onOpenGoto}>
         <Pilcrow className="h-3.5 w-3.5" />
       </ToolbarBtn>
       {/* Print-preview toggle — hides every editing affordance (block grips,
           +/trash chrome, navigation pane, this toolbar itself) so the user
           can sanity-check what the page actually looks like before exporting.
           Esc returns to edit mode; the floating pill in the desk also exits. */}
-      <ToolbarBtn disabled={false} title="預覽列印外觀（隱藏編輯外框，Esc 返回）" onClick={onEnterPreview}>
+      <ToolbarBtn disabled={false} title={t('預覽列印外觀（隱藏編輯外框，Esc 返回）', 'Print preview (hide editor chrome, Esc to return)')} onClick={onEnterPreview}>
         <Eye className="h-3.5 w-3.5" />
       </ToolbarBtn>
       {/* Selection status pushed to the right edge so the (left-side)
@@ -2595,7 +2634,7 @@ function FormatToolbar({
           status string's length. `ml-auto` reserves a flexible gutter
           between the action buttons and the readout. */}
       <span className="ml-auto text-[11px] text-muted-foreground whitespace-nowrap">
-        {block ? `已選：${KIND_LABEL[block.kind]}` : '點選一段文字以開始編輯'}
+        {block ? t(`已選：${KIND_LABEL_ZH[block.kind]}`, `Selected: ${KIND_LABEL_EN[block.kind]}`) : t('點選一段文字以開始編輯', 'Click a paragraph to start editing')}
       </span>
     </div>
   );
@@ -2619,6 +2658,7 @@ function PageSettingsMenu({
   onTogglePageOrientation: () => void;
   onSetPageMargins: (m: DocxPageMargins) => void;
 }): JSX.Element {
+  const t = useT();
   const isLandscape = pageSize.w > pageSize.h;
   // For preset matching we normalise so portrait/landscape of the same paper
   // both highlight the same row.
@@ -2632,18 +2672,18 @@ function PageSettingsMenu({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          title="頁面大小 / 方向 / 邊界"
+          title={t('頁面大小 / 方向 / 邊界', 'Page size / orientation / margins')}
           className="inline-flex items-center gap-1 h-7 px-2 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
         >
           <FileText className="h-3.5 w-3.5" />
-          <span>{matchedPreset ? matchedPreset.label.split(' ')[0] : '自訂'}</span>
+          <span>{matchedPreset ? matchedPreset.label.split(' ')[0] : t('自訂', 'Custom')}</span>
           <span className="text-[10px] text-muted-foreground/70">
-            {isLandscape ? '橫' : '直'}
+            {isLandscape ? t('橫', 'L') : t('直', 'P')}
           </span>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[14rem]">
-        <DropdownMenuLabel>紙張大小</DropdownMenuLabel>
+        <DropdownMenuLabel>{t('紙張大小', 'Paper size')}</DropdownMenuLabel>
         {PAGE_PRESETS.map((p) => {
           const selected = matchedPreset?.id === p.id;
           return (
@@ -2657,12 +2697,12 @@ function PageSettingsMenu({
           );
         })}
         <DropdownMenuSeparator />
-        <DropdownMenuLabel>方向</DropdownMenuLabel>
+        <DropdownMenuLabel>{t('方向', 'Orientation')}</DropdownMenuLabel>
         <DropdownMenuItem onSelect={onTogglePageOrientation}>
-          {isLandscape ? '改為直向' : '改為橫向'}
+          {isLandscape ? t('改為直向', 'Switch to portrait') : t('改為橫向', 'Switch to landscape')}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuLabel>邊界</DropdownMenuLabel>
+        <DropdownMenuLabel>{t('邊界', 'Margins')}</DropdownMenuLabel>
         {MARGIN_PRESETS.map((m) => {
           const selected = pageMargins.top === m.v && pageMargins.bottom === m.v
             && pageMargins.left === m.v && pageMargins.right === m.v;
@@ -2681,7 +2721,7 @@ function PageSettingsMenu({
               }
               className={cn(selected && 'bg-accent text-accent-foreground')}
             >
-              {m.label}
+              {t(m.labelZh, m.labelEn)}
             </DropdownMenuItem>
           );
         })}
@@ -2829,7 +2869,7 @@ function BlockRow({
           // pointerdown — otherwise tapping the grip without dragging blurs
           // the active RichBlock and loses the user's caret.
           onMouseDown={(e) => e.preventDefault()}
-          title="拖曳到任意位置"
+          title={tImp('拖曳到任意位置', 'Drag to any position')}
           className="mt-1 shrink-0 p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-secondary cursor-grab active:cursor-grabbing touch-none"
         >
           <GripVertical className="h-3.5 w-3.5" />
@@ -2883,7 +2923,10 @@ function BlockRow({
             onClick={onCycleKind}
             onMouseDown={(e) => e.preventDefault()}
             className="mt-1 shrink-0 text-xs px-1.5 py-0.5 rounded bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80 w-16 text-center"
-            title={`點擊改為「${KIND_LABEL[nextKind]}」（循環：段落 → H1 → H2 → H3 → • 列表 → 1. 列表 → 段落）`}
+            title={tImp(
+              `點擊改為「${KIND_LABEL_ZH[nextKind]}」（循環：段落 → H1 → H2 → H3 → • 列表 → 1. 列表 → 段落）`,
+              `Click to change to "${KIND_LABEL_EN[nextKind]}" (cycle: Paragraph → H1 → H2 → H3 → • List → 1. List → Paragraph)`,
+            )}
           >
             {KIND_LABEL[block.kind]}
           </button>
@@ -2914,7 +2957,7 @@ function BlockRow({
             onMouseDown={(e) => e.preventDefault()}
             onClick={onInsertAfter}
             className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"
-            title="在後方插入段落"
+            title={tImp('在後方插入段落', 'Insert paragraph below')}
           >
             <Plus className="h-3 w-3" />
           </button>
@@ -2924,7 +2967,7 @@ function BlockRow({
               onMouseDown={(e) => e.preventDefault()}
               onClick={onResetPosition}
               className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground text-[10px] leading-none"
-              title="回到原本流式位置"
+              title={tImp('回到原本流式位置', 'Restore to original flow position')}
             >
               ↺
             </button>
@@ -2970,7 +3013,7 @@ function BlockRow({
             onMouseDown={(e) => e.preventDefault()}
             onClick={onRemove}
             className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
-            title="刪除整個段落"
+            title={tImp('刪除整個段落', 'Delete entire paragraph')}
           >
             <Trash2 className="h-3 w-3" />
           </button>
@@ -3191,7 +3234,7 @@ function TableBlock({
           type="button"
           onPointerDown={onStartMove}
           onMouseDown={(e) => e.preventDefault()}
-          title="拖曳到任意位置"
+          title={tImp('拖曳到任意位置', 'Drag to any position')}
           className="mt-1 shrink-0 p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-secondary cursor-grab active:cursor-grabbing touch-none"
         >
           <GripVertical className="h-3.5 w-3.5" />
@@ -3297,7 +3340,7 @@ function TableBlock({
             onMouseDown={(e) => e.preventDefault()}
             onClick={onInsertAfter}
             className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"
-            title="在後方插入段落"
+            title={tImp('在後方插入段落', 'Insert paragraph below')}
           >
             <Plus className="h-3 w-3" />
           </button>
@@ -3307,7 +3350,7 @@ function TableBlock({
               onMouseDown={(e) => e.preventDefault()}
               onClick={onResetPosition}
               className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground text-[10px] leading-none"
-              title="回到原本流式位置"
+              title={tImp('回到原本流式位置', 'Restore to original flow position')}
             >
               ↺
             </button>
@@ -3317,7 +3360,7 @@ function TableBlock({
             onMouseDown={(e) => e.preventDefault()}
             onClick={onRemove}
             className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
-            title="刪除整個表格"
+            title={tImp('刪除整個表格', 'Delete entire table')}
           >
             <Trash2 className="h-3 w-3" />
           </button>
@@ -3528,7 +3571,7 @@ function ImageBlockRow({
           type="button"
           onPointerDown={onStartMove}
           onMouseDown={(e) => e.preventDefault()}
-          title="拖曳到任意位置"
+          title={tImp('拖曳到任意位置', 'Drag to any position')}
           className="mt-1 shrink-0 p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-secondary cursor-grab active:cursor-grabbing touch-none"
         >
           <GripVertical className="h-3.5 w-3.5" />
@@ -3564,7 +3607,7 @@ function ImageBlockRow({
             <span
               role="presentation"
               onPointerDown={startResize}
-              title="拖曳調整大小 · Shift 解除等比例"
+              title={tImp('拖曳調整大小 · Shift 解除等比例', 'Drag to resize · Shift to unlock aspect ratio')}
               className="absolute -bottom-1 -right-1 h-2.5 w-2.5 rounded-sm bg-background border border-primary cursor-nwse-resize opacity-0 group-hover:opacity-100"
             />
           )}
@@ -3619,7 +3662,7 @@ function ImageBlockRow({
             onMouseDown={(e) => e.preventDefault()}
             onClick={onInsertAfter}
             className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"
-            title="在後方插入段落"
+            title={tImp('在後方插入段落', 'Insert paragraph below')}
           >
             <Plus className="h-3 w-3" />
           </button>
@@ -3629,7 +3672,7 @@ function ImageBlockRow({
               onMouseDown={(e) => e.preventDefault()}
               onClick={onResetPosition}
               className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground text-[10px] leading-none"
-              title="回到原本流式位置"
+              title={tImp('回到原本流式位置', 'Restore to original flow position')}
             >
               ↺
             </button>
@@ -3639,7 +3682,7 @@ function ImageBlockRow({
             onMouseDown={(e) => e.preventDefault()}
             onClick={onRemove}
             className="p-1 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
-            title="刪除圖片"
+            title={tImp('刪除圖片', 'Delete image')}
           >
             <Trash2 className="h-3 w-3" />
           </button>
@@ -3735,7 +3778,7 @@ function LinkEditDialog({
     <div
       ref={dialogRef}
       role="dialog"
-      aria-label="編輯連結"
+      aria-label={tImp('編輯連結', 'Edit link')}
       className="absolute top-3 right-3 z-30 w-[320px] rounded-md border bg-background shadow-lg p-3 text-sm space-y-2"
       onKeyDown={(e) => {
         // R234 — IME composition guard, mirrors R231 / R232 / R233. The
@@ -3755,10 +3798,10 @@ function LinkEditDialog({
         }
       }}
     >
-      <div className="text-xs font-medium">{defaultUrl ? '編輯連結' : '插入連結'}</div>
+      <div className="text-xs font-medium">{defaultUrl ? tImp('編輯連結', 'Edit link') : tImp('插入連結', 'Insert link')}</div>
       <label className="block">
         <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-          連結網址
+          {tImp('連結網址', 'Link URL')}
         </span>
         <input
           ref={urlRef}
@@ -3779,21 +3822,21 @@ function LinkEditDialog({
         />
         {urlError && (
           <div className="mt-1 text-[10px] text-destructive">
-            請先填入網址再插入
+            {tImp('請先填入網址再插入', 'Enter a URL before inserting')}
           </div>
         )}
       </label>
       <div className="flex items-center justify-between pt-1">
-        <span className="text-[10px] text-muted-foreground">Esc 取消 · Enter {defaultUrl ? '套用' : '插入'}</span>
+        <span className="text-[10px] text-muted-foreground">{tImp('Esc 取消 · Enter', 'Esc to cancel · Enter to')} {defaultUrl ? tImp('套用', 'apply') : tImp('插入', 'insert')}</span>
         <div className="flex items-center gap-1">
           {defaultUrl && (
             <button
               type="button"
               onClick={() => onCommit('')}
               className="px-2 py-1 text-xs rounded border hover:bg-secondary"
-              title="移除目前連結"
+              title={tImp('移除目前連結', 'Remove current link')}
             >
-              清除連結
+              {tImp('清除連結', 'Clear link')}
             </button>
           )}
           {/* Sibling-shortcut-in-tooltip parity: every primary-action button
@@ -3812,10 +3855,10 @@ function LinkEditDialog({
           <button
             type="button"
             onClick={submit}
-            title={defaultUrl ? '套用變更 (Enter)' : '插入連結 (Enter)'}
+            title={defaultUrl ? tImp('套用變更 (Enter)', 'Apply changes (Enter)') : tImp('插入連結 (Enter)', 'Insert link (Enter)')}
             className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90"
           >
-            {defaultUrl ? '套用' : '插入'}
+            {defaultUrl ? tImp('套用', 'Apply') : tImp('插入', 'Insert')}
           </button>
         </div>
       </div>
@@ -3903,7 +3946,7 @@ function MarkdownInsertDialog({
       // R341 — was `setError(true)` with a hardcoded literal at the
       // display site; now sets the message text directly so all error
       // paths route through one display channel.
-      setError('請先填入 Markdown 內容再插入');
+      setError(tImp('請先填入 Markdown 內容再插入', 'Enter Markdown content before inserting'));
       taRef.current?.focus();
       return;
     }
@@ -3918,7 +3961,7 @@ function MarkdownInsertDialog({
     <div
       ref={dialogRef}
       role="dialog"
-      aria-label="插入 Markdown"
+      aria-label={tImp('插入 Markdown', 'Insert Markdown')}
       className="absolute top-3 right-3 z-30 w-[460px] rounded-md border bg-background shadow-lg p-3 text-sm space-y-2"
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
@@ -3931,7 +3974,7 @@ function MarkdownInsertDialog({
         }
       }}
     >
-      <div className="text-xs font-medium">插入 Markdown 內容</div>
+      <div className="text-xs font-medium">{tImp('插入 Markdown 內容', 'Insert Markdown content')}</div>
       <label className="block">
         <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
           Markdown 原始碼
@@ -3964,7 +4007,7 @@ function MarkdownInsertDialog({
       </label>
       <div className="flex items-center justify-between pt-1">
         <span className="text-[10px] text-muted-foreground">
-          Esc 取消 · Ctrl+Enter 插入
+          {tImp('Esc 取消 · Ctrl+Enter 插入', 'Esc to cancel · Ctrl+Enter to insert')}
         </span>
         <div className="flex items-center gap-1">
           {/* R106 — sibling-shortcut-in-tooltip parity for the secondary
@@ -3991,10 +4034,10 @@ function MarkdownInsertDialog({
           <button
             type="button"
             onClick={onClose}
-            title="取消插入 (Esc)"
+            title={tImp('取消插入 (Esc)', 'Cancel insertion (Esc)')}
             className="px-2 py-1 text-xs rounded border hover:bg-secondary"
           >
-            取消
+            {tImp('取消', 'Cancel')}
           </button>
           {/* Ctrl+Enter (not bare Enter) — the keymap at line 3320 binds it
               that way because the textarea above is multi-line and bare Enter
@@ -4013,10 +4056,10 @@ function MarkdownInsertDialog({
           <button
             type="button"
             onClick={submit}
-            title="插入 Markdown 內容 (Ctrl+Enter)"
+            title={tImp('插入 Markdown 內容 (Ctrl+Enter)', 'Insert Markdown content (Ctrl+Enter)')}
             className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90"
           >
-            插入
+            {tImp('插入', 'Insert')}
           </button>
         </div>
       </div>
@@ -4078,7 +4121,7 @@ function HtmlInsertDialog({
   const submit = () => {
     const trimmed = source.trim();
     if (!trimmed) {
-      setError('請先填入 HTML 內容再插入');
+      setError(tImp('請先填入 HTML 內容再插入', 'Enter HTML content before inserting'));
       taRef.current?.focus();
       return;
     }
@@ -4103,7 +4146,7 @@ function HtmlInsertDialog({
     <div
       ref={dialogRef}
       role="dialog"
-      aria-label="插入 HTML"
+      aria-label={tImp('插入 HTML', 'Insert HTML')}
       className="absolute top-3 right-3 z-30 w-[460px] rounded-md border bg-background shadow-lg p-3 text-sm space-y-2"
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
@@ -4116,7 +4159,7 @@ function HtmlInsertDialog({
         }
       }}
     >
-      <div className="text-xs font-medium">插入 HTML 內容</div>
+      <div className="text-xs font-medium">{tImp('插入 HTML 內容', 'Insert HTML content')}</div>
       <label className="block">
         <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
           HTML 原始碼
@@ -4144,24 +4187,24 @@ function HtmlInsertDialog({
       </label>
       <div className="flex items-center justify-between pt-1">
         <span className="text-[10px] text-muted-foreground">
-          Esc 取消 · Ctrl+Enter 插入
+          {tImp('Esc 取消 · Ctrl+Enter 插入', 'Esc to cancel · Ctrl+Enter to insert')}
         </span>
         <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={onClose}
-            title="取消插入 (Esc)"
+            title={tImp('取消插入 (Esc)', 'Cancel insertion (Esc)')}
             className="px-2 py-1 text-xs rounded border hover:bg-secondary"
           >
-            取消
+            {tImp('取消', 'Cancel')}
           </button>
           <button
             type="button"
             onClick={submit}
-            title="插入 HTML 內容 (Ctrl+Enter)"
+            title={tImp('插入 HTML 內容 (Ctrl+Enter)', 'Insert HTML content (Ctrl+Enter)')}
             className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90"
           >
-            插入
+            {tImp('插入', 'Insert')}
           </button>
         </div>
       </div>

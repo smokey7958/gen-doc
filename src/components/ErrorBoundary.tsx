@@ -6,6 +6,7 @@
 
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { AlertOctagon } from 'lucide-react';
+import { tImp } from '../lib/i18n';
 
 interface Props {
   children: ReactNode;
@@ -93,7 +94,7 @@ export class ErrorBoundary extends Component<Props, State> {
         <div className="max-w-2xl mx-auto space-y-4">
           <div className="flex items-center gap-2 text-destructive">
             <AlertOctagon className="h-5 w-5" />
-            <h2 className="text-base font-semibold">編輯器發生錯誤</h2>
+            <h2 className="text-base font-semibold">{tImp('編輯器發生錯誤', 'Editor encountered an error')}</h2>
           </div>
           {this.props.label ? (
             <div className="text-xs text-muted-foreground">{this.props.label}</div>
@@ -103,7 +104,7 @@ export class ErrorBoundary extends Component<Props, State> {
           </div>
           {error.stack ? (
             <details className="text-xs">
-              <summary className="cursor-pointer text-muted-foreground">堆疊</summary>
+              <summary className="cursor-pointer text-muted-foreground">{tImp('堆疊', 'Stack')}</summary>
               <pre className="mt-2 text-[11px] font-mono bg-secondary/40 border border-border rounded p-3 overflow-auto whitespace-pre-wrap">
                 {error.stack}
               </pre>
@@ -123,14 +124,14 @@ export class ErrorBoundary extends Component<Props, State> {
               onClick={this.reset}
               className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary"
             >
-              重試
+              {tImp('重試', 'Retry')}
             </button>
             <button
               type="button"
               onClick={this.copyDiagnostics}
               className="text-xs px-3 py-1.5 rounded border border-border hover:bg-secondary"
             >
-              {this.state.copied ? '已複製' : '複製錯誤資訊'}
+              {this.state.copied ? tImp('已複製', 'Copied') : tImp('複製錯誤資訊', 'Copy error details')}
             </button>
           </div>
         </div>

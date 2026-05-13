@@ -175,6 +175,13 @@ export interface UserConfig {
   windowBounds: { x: number; y: number; width: number; height: number } | null;
   /** Whether to re-open the most recent .gd workspace on launch. */
   autoOpenLastWorkspace: boolean;
+  /**
+   * R405 — explicit UI-language preference. `null` = follow OS locale
+   * (zh-* OS → 'zh', everything else → 'en'). Persisted via Settings dialog
+   * or the toolbar language selector. Affects renderer-side React strings
+   * via `useT()` hook and main-process app menu via rebuildAppMenu(locale).
+   */
+  locale: 'zh' | 'en' | null;
 }
 
 /** Stored chat-history row, returned to renderer for replay. */
@@ -248,6 +255,13 @@ export interface GenDocBridge {
      * the window in a half-quit state where data could later be lost.
      */
     saveAndQuitResult(ok: boolean): void;
+    /**
+     * R405 — return the OS locale string from Chromium (e.g. 'zh-TW',
+     * 'en-US', 'ja-JP'). Used at boot to pick a default UI language when
+     * UserConfig.locale is null (= "follow OS"). The renderer maps anything
+     * starting with "zh" to its 'zh' locale, everything else to 'en'.
+     */
+    getOsLocale(): Promise<string>;
   };
   workspace: {
     open(): Promise<OpenedWorkspace | null>;
@@ -371,6 +385,7 @@ export const IPC = {
     setDirty: 'app:setDirty',
     confirm: 'app:confirm',
     saveAndQuitResult: 'app:saveAndQuitResult',
+    getOsLocale: 'app:getOsLocale',
   },
   workspace: {
     open: 'workspace:open',

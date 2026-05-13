@@ -21,6 +21,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Replace, Search, X } from 'lucide-react';
 import { cn, sliceCodePoints } from '../lib/utils';
+import { useT } from '../lib/i18n';
 
 export interface SearchSegment {
   /** Stable id the host editor uses to address this text fragment. */
@@ -197,6 +198,8 @@ export function FindReplaceDialog({
   title,
   focusNonce,
 }: Props): JSX.Element | null {
+  // R405 — bilingual.
+  const t = useT();
   // Seed from the module-level cache so a remount (tab switch) brings back
   // whatever the user last had typed. The selection-prefill effect below
   // still wins when the user has a non-empty selection at the moment they
@@ -509,7 +512,7 @@ export function FindReplaceDialog({
       offsetAfter: current.offset + expanded.length,
     };
     onUpdateSegment(seg.id, before + expanded + after);
-    flashStatus('已取代 1 個');
+    flashStatus(t('已取代 1 個', 'Replaced 1'));
   };
 
   /**
@@ -519,7 +522,7 @@ export function FindReplaceDialog({
    */
   const onReplaceAllClick = () => {
     if (matches.length === 0) {
-      flashStatus(query ? '找不到符合項目' : '');
+      flashStatus(query ? t('找不到符合項目', 'No matches found') : '');
       return;
     }
     if (matches.length >= REPLACE_ALL_CONFIRM_THRESHOLD && !confirmAll) {
@@ -541,7 +544,7 @@ export function FindReplaceDialog({
    */
   const runReplaceAll = () => {
     if (matches.length === 0) {
-      flashStatus(query ? '找不到符合項目' : '');
+      flashStatus(query ? t('找不到符合項目', 'No matches found') : '');
       return;
     }
     const re = useRegex ? compilePattern(query, opts) : null;
@@ -570,7 +573,7 @@ export function FindReplaceDialog({
       }
       onUpdateSegment(seg.id, text);
     }
-    flashStatus(`已取代 ${count} 個`);
+    flashStatus(t(`已取代 ${count} 個`, `Replaced ${count}`));
   };
 
   return (
@@ -661,7 +664,7 @@ export function FindReplaceDialog({
           type="button"
           onClick={onClose}
           className="p-0.5 rounded hover:bg-secondary text-muted-foreground"
-          title="關閉尋找與取代 (Esc)"
+          title={t('關閉尋找與取代 (Esc)', 'Close Find & Replace (Esc)')}
           // R152 — icon-only-button accessible-name parity. Same round
           // adds aria-label to the three other close-X buttons (AIPanel
           // 錯誤訊息, TabBar 頁籤 X, FileExplorer 錯誤橫幅, Toaster 通知);
@@ -669,7 +672,7 @@ export function FindReplaceDialog({
           // parenthetical lives in `title` (visual hover) only, per the
           // AIPanel.tsx:775 convention — aria-label carries the action
           // verb; SR engines announce keyboard shortcuts separately.
-          aria-label="關閉尋找與取代"
+          aria-label={t('關閉尋找與取代', 'Close Find & Replace')}
         >
           <X className="h-3.5 w-3.5" />
         </button>
@@ -689,7 +692,7 @@ export function FindReplaceDialog({
             // anchored to the role, mirroring the convention used at every
             // other input in this dialog (none currently!) and the broader
             // codebase pattern of icon-only-button aria-label parity (R152).
-            aria-label="尋找"
+            aria-label={t('尋找', 'Find')}
             // Select-all when the user manually clicks back into a non-empty
             // query field — common pattern after Replace All when they want
             // to immediately search for something else.
@@ -715,7 +718,7 @@ export function FindReplaceDialog({
             // strictly nicer in this narrow find input, and JS string
             // length changes (3→1) don't touch the search query (the
             // placeholder is HTML-attribute only, never read as `value`).
-            placeholder="尋找…"
+            placeholder={t('尋找…', 'Find…')}
             // Red border / ring when the user has typed something but
             // there are zero hits — without this, the only "no match"
             // signal was the 11px "0 個結果" tucked into the status
@@ -748,14 +751,14 @@ export function FindReplaceDialog({
             type="button"
             onClick={prev}
             disabled={total === 0}
-            title={total === 0 ? '沒有符合項目' : '上一個 (Shift+Enter / Shift+F3)'}
+            title={total === 0 ? t('沒有符合項目', 'No matches') : t('上一個 (Shift+Enter / Shift+F3)', 'Previous (Shift+Enter / Shift+F3)')}
             // R155 — icon-only-button accessible-name parity, same pattern
             // R152 closed for the four close-X buttons across the codebase.
             // Shortcut parenthetical lives in `title` only, per the
             // AIPanel.tsx:775 convention — aria-label carries the action
             // verb only, since SR engines announce shortcuts via the
             // separate keyboard-state surface.
-            aria-label="上一個符合項目"
+            aria-label={t('上一個符合項目', 'Previous match')}
             className={cn(
               'p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary',
               total === 0 && 'opacity-40 pointer-events-none',
@@ -767,8 +770,8 @@ export function FindReplaceDialog({
             type="button"
             onClick={next}
             disabled={total === 0}
-            title={total === 0 ? '沒有符合項目' : '下一個 (Enter / F3)'}
-            aria-label="下一個符合項目"
+            title={total === 0 ? t('沒有符合項目', 'No matches') : t('下一個 (Enter / F3)', 'Next (Enter / F3)')}
+            aria-label={t('下一個符合項目', 'Next match')}
             className={cn(
               'p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary',
               total === 0 && 'opacity-40 pointer-events-none',
@@ -784,7 +787,7 @@ export function FindReplaceDialog({
             value={replacement}
             onChange={(e) => setReplacement(e.target.value)}
             // R155 — same accessible-name treatment as the 尋找 input above.
-            aria-label="取代為"
+            aria-label={t('取代為', 'Replace with')}
             // Enter inside the replacement field = replace current match,
             // matching VS Code / Word / Sheets convention. The dialog-level
             // onKeyDown maps Enter → next(); without stopPropagation here,
@@ -811,7 +814,7 @@ export function FindReplaceDialog({
                 replaceOne();
               }
             }}
-            placeholder="取代為…"
+            placeholder={t('取代為…', 'Replace with…')}
             className="flex-1 px-2 py-1 text-xs border rounded bg-background outline-none focus:ring-1 focus:ring-primary"
           />
           <button
@@ -828,12 +831,12 @@ export function FindReplaceDialog({
             // 「於取代欄位」disambiguates from the dialog-level Enter that
             // triggers next() everywhere else (see onKeyDown at line ~564).
             // R89 — disabled-flip per the prev/next batch comment above.
-            title={!current ? '沒有符合項目可取代' : '取代目前項目（於『取代為』欄位按 Enter）'}
+            title={!current ? t('沒有符合項目可取代', 'No matches to replace') : t('取代目前項目（於『取代為』欄位按 Enter）', 'Replace current match (press Enter in the Replace field)')}
             // R155 — sibling parity with the prev/next icon-only buttons
             // above. ReplaceAll right next door has visible text「全部取代」
             // / 「確認取代 N 個」 so it doesn't need aria-label; this Replace
             // button is the only icon-only one in the row.
-            aria-label="取代目前項目"
+            aria-label={t('取代目前項目', 'Replace current match')}
             className={cn(
               'p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary',
               !current && 'opacity-40 pointer-events-none',
@@ -851,10 +854,10 @@ export function FindReplaceDialog({
             // clicked), so the disabled string takes precedence cleanly.
             title={
               total === 0
-                ? '沒有符合項目可取代'
+                ? t('沒有符合項目可取代', 'No matches to replace')
                 : confirmAll
-                  ? '再次點擊以確認取代'
-                  : '取代所有符合項目'
+                  ? t('再次點擊以確認取代', 'Click again to confirm replacing')
+                  : t('取代所有符合項目', 'Replace all matches')
             }
             className={cn(
               'px-2 py-1 text-[11px] border rounded transition-colors whitespace-nowrap',
@@ -864,7 +867,7 @@ export function FindReplaceDialog({
               total === 0 && 'opacity-40 pointer-events-none',
             )}
           >
-            {confirmAll ? `確認取代 ${total} 個` : '全部取代'}
+            {confirmAll ? t(`確認取代 ${total} 個`, `Confirm: replace ${total}`) : t('全部取代', 'Replace All')}
           </button>
         </div>
 
@@ -877,18 +880,18 @@ export function FindReplaceDialog({
                 onChange={(e) => setCaseSensitive(e.target.checked)}
                 className="h-3 w-3"
               />
-              區分大小寫
+              {t('區分大小寫', 'Match case')}
             </label>
-            <label className="inline-flex items-center gap-1 cursor-pointer" title="完整單字符合 (\\b 邊界)">
+            <label className="inline-flex items-center gap-1 cursor-pointer" title={t('完整單字符合 (\\b 邊界)', 'Match whole words (\\b boundaries)')}>
               <input
                 type="checkbox"
                 checked={wholeWord}
                 onChange={(e) => setWholeWord(e.target.checked)}
                 className="h-3 w-3"
               />
-              全字符合
+              {t('全字符合', 'Whole word')}
             </label>
-            <label className="inline-flex items-center gap-1 cursor-pointer" title="JavaScript 正規表示式語法">
+            <label className="inline-flex items-center gap-1 cursor-pointer" title={t('JavaScript 正規表示式語法', 'JavaScript regex syntax')}>
               <input
                 type="checkbox"
                 checked={useRegex}
@@ -911,7 +914,7 @@ export function FindReplaceDialog({
           <span role="status" aria-live="polite" aria-atomic="true">
             {total === 0
               ? query
-                ? '0 個結果'
+                ? t('0 個結果', '0 results')
                 : ''
               : `${activeIdx + 1} / ${total}${current?.label ? ` · ${current.label}` : ''}`}
           </span>
@@ -927,7 +930,7 @@ export function FindReplaceDialog({
             : 'polite'}`). */}
         {regexError && (
           <div role="alert" className="text-[11px] text-destructive truncate" title={regexError}>
-            正規表示式錯誤：{regexError}
+            {t('正規表示式錯誤：', 'Regex error: ')}{regexError}
           </div>
         )}
 

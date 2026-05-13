@@ -18,6 +18,7 @@
 import { useEffect, useRef } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle2, Info, X } from 'lucide-react';
 import { useToasts, type ToastVariant } from '../store/toast';
+import { tImp } from '../lib/i18n';
 import { cn } from '../lib/utils';
 
 const VARIANT_STYLES: Record<ToastVariant, string> = {
@@ -122,7 +123,7 @@ export function Toaster(): JSX.Element {
       // events for its own area.
       className="pointer-events-none fixed bottom-3 right-3 z-50 flex flex-col gap-2 max-w-[min(420px,90vw)]"
       role="region"
-      aria-label="通知"
+      aria-label={tImp('通知', 'Notifications')}
     >
       {toasts.map((t) => {
         const Icon = VARIANT_ICON[t.variant];
@@ -181,7 +182,7 @@ export function Toaster(): JSX.Element {
                 error so it can use the AIPanel string verbatim. */}
             <button
               type="button"
-              title="關閉通知"
+              title={tImp('關閉通知', 'Dismiss notification')}
               // R152 — icon-only-button accessible-name parity. Pairs with
               // AIPanel.tsx:609-610 / TabBar.tsx (close-X) / FileExplorer
               // .tsx (banner X), all updated this round. The toast's
@@ -190,7 +191,7 @@ export function Toaster(): JSX.Element {
               // the close button needs its own action-scoped label so SR
               // users reach the dismiss control without falling back to
               // the unannounced `<X>` icon.
-              aria-label="關閉通知"
+              aria-label={tImp('關閉通知', 'Dismiss notification')}
               onClick={() => dismiss(t.id)}
               className="text-muted-foreground hover:text-foreground rounded p-0.5 -mr-1 -mt-0.5"
             >

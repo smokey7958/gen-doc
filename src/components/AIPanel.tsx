@@ -24,6 +24,7 @@ import { applyChangeset } from '../ai/changeset-apply';
 import { DiffPreview } from './DiffPreview';
 import { notify } from '../store/toast';
 import { cn, slicePreview } from '../lib/utils';
+import { useT, tImp } from '../lib/i18n';
 import { serializeChangeset } from '../lib/changeset-serialize';
 
 interface Props {
@@ -115,6 +116,9 @@ useWorkspace.subscribe((s, prev) => {
 export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Props): JSX.Element {
   const ai = useAI();
   const ws = useWorkspace();
+  // R405 — bilingual translator wired through the component so every
+  // string in the AI panel flips on locale toggle.
+  const t = useT();
   const [draft, setDraft] = useState(draftMemory);
   useEffect(() => {
     draftMemory = draft;
@@ -569,7 +573,7 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
       // OLD's failed push. Same shape as R240 / R271's catch arms.
       if (useWorkspace.getState().workspaceId === applyWorkspaceId) {
         const msg = err instanceof Error ? err.message : String(err);
-        notify(`儲存復原紀錄失敗：${msg}（此步驟無法以 Ctrl+Z 復原）`, 'error');
+        notify(tImp(`儲存復原紀錄失敗：${msg}（此步驟無法以 Ctrl+Z 復原）`, `Failed to save undo history: ${msg} (this step cannot be undone with Ctrl+Z)`), 'error');
       }
     }
     // R180 — only flip the toolbar mirror / clear redo when we're still in
@@ -894,21 +898,21 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
                 of `line 453/460` was already obsolete by the time the
                 file saved — corrected in-place to the post-anchor
                 positions, the same R142 same-round-self-drift loop. */}
-            <span className="opacity-70 shrink-0">選取上下文：</span>
+            <span className="opacity-70 shrink-0">{tImp('選取上下文：', 'Selected context:')}</span>
             <span className="truncate flex-1" title={tooltip}>
               {activeSelection.preview}
             </span>
             {charCount > 0 && (
               <span
                 className="opacity-60 shrink-0 tabular-nums"
-                title="選取片段字元數（送給模型的完整內容）"
+                title={t('選取片段字元數（送給模型的完整內容）', 'Selected text character count (full content sent to the model)')}
               >
                 {charCount.toLocaleString()} 字
               </span>
             )}
             <button
               onClick={() => ws.setSelection(null)}
-              title="清除選取上下文"
+              title={t('清除選取上下文', 'Clear selection context')}
               className="opacity-50 hover:opacity-100 hover:bg-secondary rounded p-0.5 transition-colors shrink-0"
             >
               <X className="h-3 w-3" />
@@ -951,7 +955,7 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
             // read as a broken button.
             onPickExample={(text) => {
               if (draft.trim()) {
-                notify('輸入框已有內容，請先清空再點選範例', 'info');
+                notify(tImp('輸入框已有內容，請先清空再點選範例', 'Input already has content — clear it first to use an example'), 'info');
                 inputRef.current?.focus();
                 return;
               }
@@ -1038,7 +1042,7 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
                       // re-attempt retry.
                       useAI.getState().finalizeStreaming();
                       const msg = err instanceof Error ? err.message : String(err);
-                      notify(`重試失敗：${msg}`, 'error');
+                      notify(tImp(`重試失敗：${msg}`, `Retry failed: ${msg}`), 'error');
                     });
                   }}
                   className="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded border border-destructive/40 bg-background hover:bg-destructive/10"
@@ -1064,8 +1068,8 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
             <button
               type="button"
               onClick={() => ai.setError(null)}
-              title="關閉錯誤訊息"
-              aria-label="關閉錯誤訊息"
+              title={t('關閉錯誤訊息', 'Dismiss error')}
+              aria-label={tImp('關閉錯誤訊息', 'Dismiss error message')}
               className="shrink-0 -mt-0.5 -mr-1 opacity-60 hover:opacity-100 hover:bg-destructive/15 rounded p-0.5 transition-colors"
             >
               <X className="h-3 w-3" />
@@ -1112,6 +1116,7 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
 
 function Header({ hasApiKey, onOpenSettings }: { hasApiKey: boolean; onOpenSettings: () => void }) {
   const ai = useAI();
+  const t = useT();
   // Two-step confirm for "新對話" — destructive (drops messages, pending,
   // streaming partial, conversationId; no undo) and the button is small and
   // sits next to non-destructive controls. Same shape as Round 29's Replace
@@ -1179,10 +1184,13 @@ function Header({ hasApiKey, onOpenSettings }: { hasApiKey: boolean; onOpenSetti
           double as documentation surfaces. */}
       <div
         className="flex items-center gap-2 text-sm font-medium"
-        title="AI 助手 — 從任何位置按 Ctrl+L 即可聚焦至下方輸入框"
+        title={t(
+          'AI 助手 — 從任何位置按 Ctrl+L 即可聚焦至下方輸入框',
+          'AI assistant — press Ctrl+L anywhere to focus the input below',
+        )}
       >
         <Bot className="h-4 w-4" />
-        <span>AI 助手</span>
+        <span>{t('AI 助手', 'AI Assistant')}</span>
       </div>
       <div className="flex items-center gap-2">
         {/* Tooltip parity with sibling controls — the Wrench (line 667) and
@@ -1198,7 +1206,7 @@ function Header({ hasApiKey, onOpenSettings }: { hasApiKey: boolean; onOpenSetti
         <select
           value={ai.model}
           onChange={(e) => ai.setModel(e.target.value)}
-          title="切換 AI 模型（不會清空目前的對話）"
+          title={t('切換 AI 模型（不會清空目前的對話）', 'Switch AI model (does not clear the current conversation)')}
           className="text-xs bg-transparent border rounded px-1 py-0.5"
         >
           {SUPPORTED_MODELS.map((m) => (
@@ -1227,10 +1235,10 @@ function Header({ hasApiKey, onOpenSettings }: { hasApiKey: boolean; onOpenSetti
           // user new to the feature understands what tool calls are.
           title={
             ai.toolsEnabled
-              ? '停用工具呼叫（改為純對話模式）'
-              : '啟用工具呼叫（讓 AI 透過工具直接修改檔案）'
+              ? t('停用工具呼叫（改為純對話模式）', 'Disable tool calls (pure chat mode)')
+              : t('啟用工具呼叫（讓 AI 透過工具直接修改檔案）', 'Enable tool calls (let AI edit files via tools)')
           }
-          aria-label={ai.toolsEnabled ? '停用工具呼叫' : '啟用工具呼叫'}
+          aria-label={ai.toolsEnabled ? t('停用工具呼叫', 'Disable tool calls') : t('啟用工具呼叫', 'Enable tool calls')}
           // R153 — toggle-state SR exposure. The dynamic `aria-label` above
           // already tells SR users「what clicking will do next」, but a
           // sighted user also reads the icon's text-primary tint as「目前
@@ -1258,11 +1266,11 @@ function Header({ hasApiKey, onOpenSettings }: { hasApiKey: boolean; onOpenSetti
           title={
             clearDisabled
               ? streaming
-                ? '請先等串流完成（或按下方停止）再清空'
-                : '對話已是空的'
+                ? t('請先等串流完成（或按下方停止）再清空', 'Wait for the stream to finish (or click Stop below) before clearing')
+                : t('對話已是空的', 'Conversation is already empty')
               : confirmClear
-                ? '再次點擊以確認清空對話歷史（含未套用變更）'
-                : '新對話：清空目前的對話歷史'
+                ? t('再次點擊以確認清空對話歷史（含未套用變更）', 'Click again to confirm clearing the conversation (including unapplied changes)')
+                : t('新對話：清空目前的對話歷史', 'New conversation: clear the current chat history')
           }
           // R153 — same icon-only-button accessible-name parity that R152
           // closed for the four close-X buttons. The Wrench sibling at
@@ -1277,7 +1285,7 @@ function Header({ hasApiKey, onOpenSettings }: { hasApiKey: boolean; onOpenSetti
           // ai.clear() — leading aria-label with a single canonical verb
           // matches AIPanel.tsx:920「複製訊息」 and SettingsDialog.tsx:317
           // -318「顯示/隱藏 API key」 dynamism-elsewhere conventions.
-          aria-label="新對話"
+          aria-label={t('新對話', 'New conversation')}
         >
           <MessageSquarePlus className="h-3.5 w-3.5" />
         </button>
@@ -1400,7 +1408,7 @@ function MessageBubble({
             type="button"
             onClick={handleCopy}
             title={copied ? '已複製' : '複製訊息文字'}
-            aria-label="複製訊息"
+            aria-label={tImp('複製訊息', 'Copy message')}
             className={cn(
               'absolute top-1 h-5 w-5 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity',
               isUser
@@ -1448,7 +1456,7 @@ function InProgressToolBadge({ name }: { name: string }) {
     <div className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-1 rounded-md bg-background/50 border border-amber-500/40 ring-1 ring-amber-500/30 animate-pulse max-w-full">
       <Wand2 className="h-3 w-3 text-amber-500 shrink-0" />
       <span className="text-foreground/80 shrink-0">{name}</span>
-      <span className="text-muted-foreground border-l border-border/50 pl-1.5">準備中…</span>
+      <span className="text-muted-foreground border-l border-border/50 pl-1.5">{tImp('準備中…', 'Preparing…')}</span>
     </div>
   );
 }
@@ -1552,27 +1560,32 @@ function Welcome({
   onOpenSettings: () => void;
   onPickExample?: (text: string) => void;
 }) {
+  // R405 — bilingual examples + welcome strings.
+  const t = useT();
   const examples = [
-    { tag: 'Markdown', text: '把『產品介紹』那節改成更精煉的版本' },
-    { tag: 'Excel', text: '在 Sheet1 的 B7 寫入 1234' },
-    { tag: 'Word', text: '把第 3 段改成「本季業績超越目標 20%」' },
-    { tag: 'PowerPoint', text: '把第 2 張投影片的「TBD」改成「2026 Q1 上線」' },
-    { tag: '跨檔', text: '讀 budget.xlsx 然後在 notes.md 新增摘要章節' },
+    { tag: 'Markdown', text: t('把『產品介紹』那節改成更精煉的版本', 'Rewrite the "Product Intro" section more concisely') },
+    { tag: 'Excel', text: t('在 Sheet1 的 B7 寫入 1234', 'Write 1234 into Sheet1!B7') },
+    { tag: 'Word', text: t('把第 3 段改成「本季業績超越目標 20%」', 'Replace paragraph 3 with "Beat this quarter\'s target by 20%"') },
+    { tag: 'PowerPoint', text: t('把第 2 張投影片的「TBD」改成「2026 Q1 上線」', 'Replace "TBD" on slide 2 with "Launch in Q1 2026"') },
+    { tag: t('跨檔', 'Cross-tab'), text: t('讀 budget.xlsx 然後在 notes.md 新增摘要章節', 'Read budget.xlsx, then add a summary section to notes.md') },
   ];
   return (
     <div className="space-y-3">
       <div className="space-y-1.5">
         <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
           <Bot className="h-4 w-4 text-sky-500" />
-          AI 助手
+          {t('AI 助手', 'AI Assistant')}
         </div>
         <p className="text-xs text-muted-foreground">
-          描述你想要的修改，AI 會用工具呼叫提出變更，按下『套用』才會生效。
+          {t(
+            '描述你想要的修改，AI 會用工具呼叫提出變更，按下『套用』才會生效。',
+            'Describe the edit you want — the AI proposes changes via tool calls; press Apply to commit them.',
+          )}
         </p>
       </div>
       <div className="space-y-1.5">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-          範例（點擊填入輸入框）
+          {t('範例（點擊填入輸入框）', 'Examples (click to fill the input)')}
         </div>
         <ul className="space-y-1.5">
           {examples.map((ex, i) => (
@@ -1621,7 +1634,10 @@ function Welcome({
                 // buttons (the section heading uses the generic phrasing
                 // because it's a one-time legend; per-button tooltips
                 // benefit from the「此」demonstrative). */
-                title="填入此範例到輸入框（若輸入框已有內容，會提示先清空）"
+                title={t(
+                  '填入此範例到輸入框（若輸入框已有內容，會提示先清空）',
+                  'Fill this example into the input (if the input already has content, a toast will ask you to clear it first)',
+                )}
               >
                 <span className="text-[10px] font-mono mr-1.5 px-1 rounded bg-background/60 text-muted-foreground">
                   {ex.tag}
@@ -1634,7 +1650,7 @@ function Welcome({
       </div>
       {!hasApiKey && (
         <Button size="sm" variant="outline" className="w-full mt-2" onClick={onOpenSettings}>
-          先去設定 Anthropic API key
+          {t('先去設定 Anthropic API key', 'Set the Anthropic API key first')}
         </Button>
       )}
     </div>
@@ -1658,6 +1674,7 @@ function InputBar({
   streaming: boolean;
   onCancel: () => void;
 }) {
+  const t = useT();
   // Auto-grow the textarea up to ~8 lines while composing. Two static rows
   // were fine for one-liners but anything pasted (a stack trace, a multi-
   // paragraph instruction) gets clipped to 2 visible lines and forces the
@@ -1696,7 +1713,7 @@ function InputBar({
         // mirroring the role this textarea plays in the panel — the
         // same semantic the parent Header「AI 助手」 announces, but here
         // labeling the *input* of that subsystem rather than the panel.
-        aria-label="AI 提示詞"
+        aria-label={t('AI 提示詞', 'AI prompt')}
         onKeyDown={(e) => {
           // Plain Enter sends; Shift+Enter inserts a newline. Skip when
           // any modifier is held — Ctrl+Enter is reserved for "Apply
@@ -1758,10 +1775,16 @@ function InputBar({
         // verbatim, so two adjacent hints read in one voice.
         placeholder={
           disabled
-            ? '請先設定 API key…'
+            ? t('請先設定 API key…', 'Set the API key first…')
             : streaming
-              ? 'AI 回應中… Esc 停止、Enter 換行（亦可按右側停止）'
-              : '描述你想要的修改（Enter 送出、Shift+Enter 換行）'
+              ? t(
+                  'AI 回應中… Esc 停止、Enter 換行（亦可按右側停止）',
+                  'AI replying… Esc to stop, Enter for newline (or click Stop on the right)',
+                )
+              : t(
+                  '描述你想要的修改（Enter 送出、Shift+Enter 換行）',
+                  'Describe the edit you want (Enter sends, Shift+Enter newline)',
+                )
         }
         className="flex-1 resize-none bg-secondary/40 rounded-md px-2 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring min-h-[3.25rem]"
       />
@@ -1803,9 +1826,9 @@ function InputBar({
           // shape, no React-event leakage. Pure defensive refactor, no
           // behavior change today.
           onClick={() => onCancel()}
-          title="停止 (Esc)"
+          title={t('停止 (Esc)', 'Stop (Esc)')}
         >
-          停止
+          {t('停止', 'Stop')}
         </Button>
       ) : (
         // The neighbouring 停止 button has visible label text so it's
@@ -1836,12 +1859,12 @@ function InputBar({
           // verb across the AI flow's user-facing strings.
           title={
             disabled
-              ? '請先設定 API key…'
+              ? t('請先設定 API key…', 'Set the API key first…')
               : !draft.trim()
-                ? '輸入提示後即可送出 (Enter)'
-                : '送出 (Enter)'
+                ? t('輸入提示後即可送出 (Enter)', 'Type a prompt to send (Enter)')
+                : t('送出 (Enter)', 'Send (Enter)')
           }
-          aria-label="送出"
+          aria-label={t('送出', 'Send')}
         >
           <Send className="h-3.5 w-3.5" />
         </Button>

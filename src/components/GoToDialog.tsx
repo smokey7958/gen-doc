@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { notify } from '../store/toast';
+import { useT, tImp } from '../lib/i18n';
 
 /**
  * Tiny "Go to N" dialog. Modeled on FindReplaceDialog but stripped down:
@@ -37,8 +38,10 @@ export function GoToDialog({
   focusNonce = 0,
   max,
   onJump,
-  label = '跳到第幾項？',
+  label,
 }: GoToDialogProps): JSX.Element | null {
+  const t = useT();
+  const resolvedLabel = label ?? t('跳到第幾項？', 'Go to which item?');
   const inputRef = useRef<HTMLInputElement>(null);
   const [value, setValue] = useState('');
   // R93 — empty-submit feedback. Without this, clicking 跳轉 (or pressing
@@ -150,7 +153,13 @@ export function GoToDialog({
     // up. Toast fires only when actual clamping occurred (n !== clamped),
     // so the in-range fast path stays quiet.
     if (n !== clamped) {
-      notify(`已調整為第 ${clamped} 項（輸入 ${n} 超出 1 – ${max} 範圍）`, 'info');
+      notify(
+        tImp(
+          `已調整為第 ${clamped} 項（輸入 ${n} 超出 1 – ${max} 範圍）`,
+          `Adjusted to item ${clamped} (input ${n} is outside 1 – ${max})`,
+        ),
+        'info',
+      );
     }
     onClose();
   };
@@ -158,7 +167,7 @@ export function GoToDialog({
   return (
     <div
       role="dialog"
-      aria-label={label}
+      aria-label={resolvedLabel}
       className="absolute top-3 right-3 z-30 w-[280px] rounded-md border bg-background shadow-lg p-3 text-sm"
       // Stop the host editor's keymap (Ctrl+B/I/U etc.) from firing while
       // typing in this dialog — focus is on the input but the bubbling
@@ -173,7 +182,7 @@ export function GoToDialog({
         }
       }}
     >
-      <label className="block text-xs text-muted-foreground mb-1.5">{label}</label>
+      <label className="block text-xs text-muted-foreground mb-1.5">{resolvedLabel}</label>
       <div className="flex items-center gap-1.5">
         <input
           ref={inputRef}
@@ -214,11 +223,11 @@ export function GoToDialog({
         <button
           type="button"
           onClick={submit}
-          title="跳轉 (Enter)"
+          title={t('跳轉 (Enter)', 'Jump (Enter)')}
           className="h-8 px-2 inline-flex items-center gap-1 rounded text-xs bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
         >
           <ArrowRight className="h-3.5 w-3.5" />
-          跳轉
+          {t('跳轉', 'Jump')}
         </button>
       </div>
       {/* Inline range error: only shown when the user has typed something
@@ -239,15 +248,15 @@ export function GoToDialog({
           sighted-only. */}
       {emptyError ? (
         <div role="alert" className="mt-1.5 text-[10px] text-destructive">
-          請輸入要跳轉的項次
+          {t('請輸入要跳轉的項次', 'Enter the item number to jump to')}
         </div>
       ) : isOutOfRange ? (
         <div role="alert" className="mt-1.5 text-[10px] text-destructive">
-          請輸入 1 – {max} 之間的數字
+          {t(`請輸入 1 – ${max} 之間的數字`, `Enter a number between 1 and ${max}`)}
         </div>
       ) : (
         <div className="mt-1.5 text-[10px] text-muted-foreground">
-          Esc 關閉 · Enter 跳轉
+          {t('Esc 關閉 · Enter 跳轉', 'Esc to close · Enter to jump')}
         </div>
       )}
     </div>
