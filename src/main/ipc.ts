@@ -57,6 +57,51 @@ import {
 } from './storage/sqlite';
 import { chat, cancel, ping } from './ai/anthropic';
 
+// R416 — authorized-roots registry: defense-in-depth so a hypothetically
+// compromised renderer can't drive fs:listDirectory / fs:readFile across the
+// whole disk. Roots are added ONLY from main-side trust events (OS dialogs,
+// successful .gd open/save, persisted recents at boot) — never from the fs
+// handlers themselves.
+const authorizedRoots = new Set<string>();
+
+// R416 — resolve + case-fold for comparison (win32 filesystems are
+// case-insensitive; dialog vs renderer may disagree on drive-letter case).
+function normalizePathKey(p: string): string {
+  const resolved = path.resolve(p);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function addAuthorizedRoot(dirPath: string): void {
+  if (dirPath) authorizedRoots.add(normalizePathKey(dirPath));
+}
+
+// R416 — file-granting events (.gd open/save, export destination) authorize
+// the file's parent directory.
+function addAuthorizedRootForFile(filePath: string): void {
+  if (filePath) addAuthorizedRoot(path.dirname(path.resolve(filePath)));
+}
+
+function isInsideAuthorizedRoots(targetPath: string): boolean {
+  const real = normalizePathKey(targetPath);
+  for (const root of authorizedRoots) {
+    if (real === root) return true;
+    // path.sep guard so root C:\foo doesn't authorize C:\foobar. A drive
+    // root ('C:\') already ends with the separator.
+    const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+    if (real.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+// R416 — extensions the app can open as a tab (openExternalFile's ext map,
+// incl. txt→markdown) or insert as media. Keeps OS drag-drop from arbitrary
+// locations working while blocking extension-less secrets (~/.ssh/id_rsa,
+// .aws/credentials) and config/key formats the app has no use for.
+const READABLE_EXTENSIONS = new Set([
+  'gd', 'md', 'markdown', 'txt', 'html', 'htm', 'docx', 'xlsx', 'pptx',
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg', 'webp',
+]);
+
 export function registerIpcHandlers(): void {
   // ── app ──────────────────────────────────────────────────────────────
   ipcMain.handle(IPC.app.info, async (): Promise<AppInfo> => {
@@ -80,6 +125,8 @@ export function registerIpcHandlers(): void {
       properties: ['openFile'],
     });
     if (result.canceled || result.filePaths.length === 0) return null;
+    // R416 — user picked this .gd via the OS dialog; authorize its folder.
+    addAuthorizedRootForFile(result.filePaths[0]);
     const opened = await readGdArchive(result.filePaths[0]);
     // R241 — pushRecent is post-open housekeeping; failure must not
     // surface as「開啟失敗」. The .gd is already in `opened` (read
@@ -93,6 +140,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.workspace.openPath, async (_e, filePath: string) => {
     const opened = await readGdArchive(filePath);
+    // R416 — register only AFTER readGdArchive proves the path is a real .gd
+    // archive (drag-drop / recents flow); a renderer probing arbitrary dirs
+    // through this handler fails the archive parse and grants nothing.
+    addAuthorizedRootForFile(filePath);
     // R241 — see workspace.open sibling above for rationale.
     await pushRecent(filePath).catch(() => undefined);
     return opened;
@@ -116,6 +167,9 @@ export function registerIpcHandlers(): void {
       return res;
     }
     const res = await writeGdArchive(req);
+    // R416 — saved .gd location is user-blessed; keep explorer/readFile
+    // access near it working.
+    addAuthorizedRootForFile(res.filePath);
     await pushRecent(res.filePath).catch(() => undefined);
     return res;
   });
@@ -149,10 +203,17 @@ export function registerIpcHandlers(): void {
       properties: ['openDirectory'],
     });
     if (result.canceled || result.filePaths.length === 0) return null;
+    // R416 — explorer root picked via OS dialog; nested subfolder listings
+    // pass the prefix check against this root.
+    addAuthorizedRoot(result.filePaths[0]);
     return result.filePaths[0];
   });
 
   ipcMain.handle(IPC.fs.listDirectory, async (_e, dirPath: string): Promise<FsEntry[]> => {
+    // R416 — scope check; see authorizedRoots doc-block.
+    if (!isInsideAuthorizedRoots(dirPath)) {
+      throw new Error('EACCES_SCOPE: directory outside authorized roots');
+    }
     // withFileTypes avoids a per-entry `lstat` for the dir/file flag, but we
     // still need a stat for size + mtime — only attempt it if asked. Skip the
     // stat for entries that fail (broken symlinks etc.) so a single bad file
@@ -189,10 +250,18 @@ export function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(IPC.fs.readFile, async (_e, filePath: string): Promise<FsFileContent> => {
-    const buf = await fs.readFile(filePath);
     const base = path.basename(filePath);
     const dot = base.lastIndexOf('.');
+    // `dot > 0` (not >= 0) — dotfiles like `.env` get ext '' and are blocked
+    // unless inside an authorized root.
     const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
+    // R416 — allow inside an authorized root (explorer flow) OR an openable
+    // extension (drag-drop from arbitrary locations). Never widen
+    // authorizedRoots from here — registration is dialog-side only.
+    if (!isInsideAuthorizedRoots(filePath) && !READABLE_EXTENSIONS.has(ext)) {
+      throw new Error('EACCES_SCOPE: file type/location not allowed');
+    }
+    const buf = await fs.readFile(filePath);
     // Buffer is a Uint8Array under the hood — cross the IPC boundary as
     // Uint8Array (electron's structured clone preserves it).
     return { name: base, ext, bytes: new Uint8Array(buf) };
@@ -309,6 +378,8 @@ async function invokeSaveAs(req: SaveWorkspaceRequest) {
   const filePath = result.filePath.toLowerCase().endsWith('.gd')
     ? result.filePath
     : `${result.filePath}.gd`;
+  // R416 — user picked the destination via the OS save dialog.
+  addAuthorizedRootForFile(filePath);
   return writeGdArchive({ ...req, filePath });
 }
 
@@ -322,6 +393,7 @@ const EXPORT_FILTERS: Record<ExportTabRequest['ext'], { name: string; extensions
 
 /** Sanitize a tab name so it's safe as a filename on Windows / mac / Linux. */
 function safeFileName(name: string, fallback: string): string {
+  // eslint-disable-next-line no-control-regex -- stripping C0 control chars is the point
   const trimmed = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim();
   return trimmed.length > 0 ? trimmed : fallback;
 }
@@ -342,6 +414,8 @@ async function invokeExportTab(req: ExportTabRequest) {
   }
   let filePath = result.filePath;
   if (!filePath.toLowerCase().endsWith(dot)) filePath = `${filePath}${dot}`;
+  // R416 — export destination picked via OS save dialog; authorize its folder.
+  addAuthorizedRootForFile(filePath);
   // R251 — atomic write so a partial-write failure doesn't truncate the
   // user's pre-existing target file. Realistic when the user re-exports
   // over an existing .docx / .xlsx / .pptx (common workflow: edit in
@@ -380,6 +454,8 @@ async function invokeExportTabs(req: ExportTabsRequest): Promise<ExportTabsResul
   });
   if (pick.canceled || pick.filePaths.length === 0) return null;
   const folderPath = pick.filePaths[0];
+  // R416 — batch-export target folder picked via OS dialog.
+  addAuthorizedRoot(folderPath);
 
   // Track names we've assigned in this batch so duplicates inside the
   // request don't collide with each other. Lower-cased because Windows /
@@ -482,6 +558,8 @@ async function invokeExportMarkdownPdf(
   if (result.canceled || !result.filePath) return null;
   let filePath = result.filePath;
   if (!filePath.toLowerCase().endsWith('.pdf')) filePath = `${filePath}.pdf`;
+  // R416 — PDF destination picked via OS save dialog; authorize its folder.
+  addAuthorizedRootForFile(filePath);
 
   const fullHtml = buildPrintableHtml(req.title, req.bodyHtml);
   // Base64 to dodge any URL-encoding edge cases with `#`, `%`, raw newlines
@@ -648,6 +726,19 @@ export async function bootStorageHousekeeping(): Promise<void> {
   await ensureSessionTempRoot();
   await sweepStaleTempRoots();
   await fs.mkdir(getConfigDir(), { recursive: true });
+  // R416 — seed authorized roots from persisted recents so explorer
+  // navigation near a recently-opened .gd (incl. the auto-open-last-
+  // workspace flow) works after an app restart without re-picking a folder.
+  // main.ts awaits this before registerIpcHandlers, so seeding completes
+  // before any fs IPC can arrive. Best-effort: a config read failure must
+  // not block boot (loadConfig's own fallback path can still throw on a
+  // failed default-write).
+  try {
+    const cfg = await loadConfig();
+    for (const p of cfg.recentFiles) addAuthorizedRootForFile(p);
+  } catch {
+    /* swallow — empty roots just means re-pick / re-open grants access. */
+  }
 }
 
 export async function shutdownStorage(): Promise<void> {

@@ -81,6 +81,19 @@ const VALID_TAB_TYPES = new Set<string>([
   'pptx',
 ]);
 
+// R416 — safe-relative-path pattern for manifest `file` entries. Legitimate
+// writers only ever emit `doc/<uuid>.<ext>` (workspace.ts addTab /
+// openExternalFile); a hand-crafted .gd could carry `../x`, `/etc/x`,
+// `C:\x`, or backslash paths. The char class excludes backslash and colon
+// (drive letters), and `^[\w]` rejects a leading separator or dot; `..`
+// inside the path is screened per-segment since the class allows '.'.
+const SAFE_ARCHIVE_PATH = /^[\w][\w\-./ ]*$/;
+
+function isSafeArchivePath(p: string): boolean {
+  if (!SAFE_ARCHIVE_PATH.test(p)) return false;
+  return p.split('/').every((seg) => seg.length > 0 && seg !== '.' && seg !== '..');
+}
+
 function validateManifest(raw: unknown): Manifest {
   if (!raw || typeof raw !== 'object') {
     throw new Error('manifest.json missing or not an object');
@@ -127,6 +140,13 @@ function validateManifest(raw: unknown): Manifest {
   for (const t of m.tabs as TabDescriptor[]) {
     if (!t.id || !t.name || !t.type || !t.file) {
       throw new Error(`Invalid tab descriptor: ${JSON.stringify(t)}`);
+    }
+    // R416 — see isSafeArchivePath doc-block above. Validated before any
+    // zip.file(desc.file) lookup in readGdArchive.
+    if (!isSafeArchivePath(t.file)) {
+      throw new Error(
+        `Invalid tab descriptor (unsafe file path "${t.file}"; archive paths must be relative — no "..", leading separators, backslashes, or drive letters): ${JSON.stringify(t)}`,
+      );
     }
     if (seenIds.has(t.id)) {
       throw new Error(
@@ -329,7 +349,7 @@ async function rotateBackups(filePath: string, title: string): Promise<void> {
   const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? tmpdir();
   const dir = path.join(home, '.gendoc', 'backups');
   await fs.mkdir(dir, { recursive: true });
-  const safeTitle = title.replace(/[^\w\u4e00-\u9fa5\-]+/g, '_').slice(0, 64) || 'workspace';
+  const safeTitle = title.replace(/[^\w\u4e00-\u9fa5-]+/g, '_').slice(0, 64) || 'workspace';
   // R192 \u2014 include a short hash of the absolute filePath so two .gd files
   // with the SAME manifest title don't share the same rotation pool.
   // Without this, a user with `~/work/Report.gd` and `~/personal/Report.gd`

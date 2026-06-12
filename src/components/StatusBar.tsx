@@ -181,7 +181,12 @@ export function StatusBar(): JSX.Element {
           className="flex items-center gap-1"
           title={new Date(lastSavedAt).toLocaleString()}
         >
-          <Check className={`h-3 w-3 ${saveState === 'success' ? 'text-emerald-500' : ''}`} />
+          {/* R410 — transition-colors: the emerald "just saved" tint now
+              eases in/out instead of snapping when the success flash
+              arms / expires. */}
+          <Check
+            className={`h-3 w-3 transition-colors duration-300 ${saveState === 'success' ? 'text-emerald-500' : ''}`}
+          />
           {formatRelative(lastSavedAt, now, locale)}
         </span>
       )}

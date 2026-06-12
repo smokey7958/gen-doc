@@ -38,9 +38,14 @@ export function DiffPreview({ pending, onApply, onReject, onModify, actionsDisab
   const tabs = useWorkspace((s) => s.tabs);
   // R405 — bilingual.
   const t = useT();
+  // R406 — describeOp takes `t` so the per-op summary lines (e.g. "新增頁
+  // 籤：foo" vs "Add tab: foo", "tabName：+12 字元" vs "tabName: +12 chars")
+  // localize. Include `t` in the memo deps so a locale toggle re-runs the
+  // map; useT's returned function identity flips with the locale subscription,
+  // so the dep change is honest.
   const opSummaries = useMemo(
-    () => pending.changeset.ops.map((op) => describeOp(op, tabs)),
-    [pending, tabs],
+    () => pending.changeset.ops.map((op) => describeOp(op, tabs, t)),
+    [pending, tabs, t],
   );
 
   const mdOp = pending.changeset.ops.find((o): o is Extract<ChangeOp, { type: 'md_text' }> => o.type === 'md_text');
@@ -55,7 +60,10 @@ export function DiffPreview({ pending, onApply, onReject, onModify, actionsDisab
           </div>
           <div className="min-w-0 flex-1">
             <div className="text-[10px] uppercase tracking-wider text-amber-500/80 font-medium">
-              待你決定
+              {/* R406 — was hardcoded Chinese; the surrounding action buttons
+                  (套用 / 修改 / 拒絕) already flip via t(). This header
+                  label was the lone outlier in the card. */}
+              {t('待你決定', 'Pending decision')}
             </div>
             <div className="text-xs font-medium truncate" title={pending.summary}>
               {pending.summary}
@@ -131,28 +139,48 @@ export function DiffPreview({ pending, onApply, onReject, onModify, actionsDisab
   );
 }
 
-function describeOp(op: ChangeOp, tabs: Tab[]): string {
+// R406 — takes `t` so every per-op summary respects the live locale.
+// Caller passes `t = useT()` so subscription is on the React side; this
+// function is pure given (op, tabs, t). The colon / paren typography
+// also flips: full-width「：」「（）」 in Chinese, half-width ": "
+// "(...)" in English — matches the codebase's existing CJK/ASCII voice
+// split (e.g. R126's same fix for confirm-dialog terminal punctuation).
+function describeOp(op: ChangeOp, tabs: Tab[], t: (zh: string, en: string) => string): string {
   const tab = tabs.find((t) => t.id === op.tabId);
   const tabName = tab?.name ?? `(tab ${op.tabId})`;
   switch (op.type) {
     case 'md_text': {
       const delta = op.after.length - op.before.length;
-      return `${tabName}：${delta >= 0 ? '+' : ''}${delta} 字元`;
+      const sign = delta >= 0 ? '+' : '';
+      return t(`${tabName}：${sign}${delta} 字元`, `${tabName}: ${sign}${delta} chars`);
     }
     case 'binary_replace': {
       const delta = op.after.byteLength - op.before.byteLength;
-      return `${tabName}：${op.description}（${delta >= 0 ? '+' : ''}${delta} bytes）`;
+      const sign = delta >= 0 ? '+' : '';
+      return t(
+        `${tabName}：${op.description}（${sign}${delta} bytes）`,
+        `${tabName}: ${op.description} (${sign}${delta} bytes)`,
+      );
     }
     case 'word_paragraph':
-      return `${tabName}：替換第 ${op.paraIndex} 段（unused legacy op）`;
+      return t(
+        `${tabName}：替換第 ${op.paraIndex} 段（unused legacy op）`,
+        `${tabName}: replace paragraph ${op.paraIndex} (unused legacy op)`,
+      );
     case 'excel_cell':
-      return `${tabName}：${op.sheet}!${op.address} → ${String(op.after)}（unused legacy op）`;
+      return t(
+        `${tabName}：${op.sheet}!${op.address} → ${String(op.after)}（unused legacy op）`,
+        `${tabName}: ${op.sheet}!${op.address} → ${String(op.after)} (unused legacy op)`,
+      );
     case 'pptx_text':
-      return `${tabName}：slide ${op.slideIndex} shape ${op.shapeId}（unused legacy op）`;
+      return t(
+        `${tabName}：slide ${op.slideIndex} shape ${op.shapeId}（unused legacy op）`,
+        `${tabName}: slide ${op.slideIndex} shape ${op.shapeId} (unused legacy op)`,
+      );
     case 'tab_create':
-      return `新增頁籤：${op.tab.name}`;
+      return t(`新增頁籤：${op.tab.name}`, `Add tab: ${op.tab.name}`);
     case 'tab_delete':
-      return `刪除頁籤：${op.tab.name}`;
+      return t(`刪除頁籤：${op.tab.name}`, `Delete tab: ${op.tab.name}`);
     default: {
       const _exhaustive: never = op;
       return `(unknown op ${(_exhaustive as ChangeOp).type})`;

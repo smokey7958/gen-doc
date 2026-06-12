@@ -14,17 +14,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle,
   AlignCenter,
   AlignJustify,
   AlignLeft,
   AlignRight,
+  AlignVerticalSpaceAround,
   Bold,
   Eye,
   Code2,
   FileCode,
   FileText,
   GripVertical,
+  Highlighter,
   Image as ImageIcon,
   Italic,
   Link as LinkIcon,
@@ -35,6 +36,8 @@ import {
   Rows,
   Columns,
   Search,
+  SeparatorHorizontal,
+  Strikethrough,
   Trash2,
   Type,
   Underline,
@@ -46,6 +49,7 @@ import {
   type DocxBlock,
   type DocxBlockKind,
   type DocxBlockStyle,
+  type DocxHighlightColor,
   type DocxImage,
   type DocxModel,
   type DocxPageSize,
@@ -144,6 +148,38 @@ const KIND_LABEL: Record<DocxBlockKind, string> = new Proxy({} as Record<DocxBlo
     return kindLabel(p as DocxBlockKind);
   },
 });
+
+/** Style-dropdown entries. Heading 4-6 stay reachable via parse / existing
+ *  mechanisms but are omitted here to keep the menu tight. */
+const STYLE_OPTIONS: { kind: DocxBlockKind; zh: string; en: string }[] = [
+  { kind: 'paragraph', zh: '內文', en: 'Body' },
+  { kind: 'heading1', zh: '標題 1', en: 'Heading 1' },
+  { kind: 'heading2', zh: '標題 2', en: 'Heading 2' },
+  { kind: 'heading3', zh: '標題 3', en: 'Heading 3' },
+  { kind: 'bullet', zh: '項目符號', en: 'Bulleted list' },
+  { kind: 'numbered', zh: '編號清單', en: 'Numbered list' },
+];
+
+/** The six named docx highlight colors the palette offers + their CSS render. */
+const HIGHLIGHT_COLORS: { id: DocxHighlightColor; zh: string; en: string; css: string }[] = [
+  { id: 'yellow', zh: '黃色', en: 'Yellow', css: '#FFFF00' },
+  { id: 'green', zh: '綠色', en: 'Green', css: '#00FF00' },
+  { id: 'cyan', zh: '青色', en: 'Cyan', css: '#00FFFF' },
+  { id: 'magenta', zh: '洋紅', en: 'Magenta', css: '#FF00FF' },
+  { id: 'red', zh: '紅色', en: 'Red', css: '#FF0000' },
+  { id: 'darkYellow', zh: '深黃', en: 'Dark yellow', css: '#808000' },
+];
+const HIGHLIGHT_CSS: Record<string, string> = Object.fromEntries(
+  HIGHLIGHT_COLORS.map((h) => [h.id, h.css]),
+);
+
+/** Line-spacing multipliers (docx `spacing.line` = 240 × multiplier). */
+const LINE_SPACING_OPTIONS: { v: number; zh: string; en: string }[] = [
+  { v: 1, zh: '單行', en: 'Single' },
+  { v: 1.15, zh: '1.15', en: '1.15' },
+  { v: 1.5, zh: '1.5 倍', en: '1.5×' },
+  { v: 2, zh: '2 倍', en: 'Double' },
+];
 
 let nextLocalId = 0;
 /**
@@ -625,7 +661,8 @@ export function DocxEditor({ tab }: Props): JSX.Element {
       kind: 'table',
       text: '',
       rows: [
-        ['欄位 1', '欄位 2', '欄位 3'],
+        // R409 — i18n: seeded header cells become document content
+        [tImp('欄位 1', 'Column 1'), tImp('欄位 2', 'Column 2'), tImp('欄位 3', 'Column 3')],
         ['', '', ''],
         ['', '', ''],
       ],
@@ -871,7 +908,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
    *     parse), we *also* apply the toggle to every run so the visual
    *     stays consistent with the new block style.
    */
-  const toggleStyle = (key: 'bold' | 'italic' | 'underline') => {
+  const toggleStyle = (key: 'bold' | 'italic' | 'underline' | 'strikethrough') => {
     if (!activeBlock) return;
     const richEl = document.querySelector(
       `[data-rich-block="1"][data-block-id="${activeBlock.id}"]`,
@@ -902,6 +939,24 @@ export function DocxEditor({ tab }: Props): JSX.Element {
     isActive: () => !!activeBlock,
     toggle: (k) => toggleStyle(k),
   });
+
+  // Ctrl/Cmd+Shift+X — strikethrough. Wired locally because the shared
+  // useFormatShortcuts hook deliberately rejects Shift combos. Ref keeps the
+  // listener stable while always seeing the latest toggleStyle closure.
+  const toggleStyleRef = useRef(toggleStyle);
+  toggleStyleRef.current = toggleStyle;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== 'x') return;
+      const ae = document.activeElement as HTMLElement | null;
+      if (!ae?.closest?.('[data-docx-editor-root]')) return;
+      e.preventDefault();
+      toggleStyleRef.current('strikethrough');
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   // Ctrl/Cmd+Z / +Y for editor-local undo/redo. After undo/redo we still need
   // to push the new model bytes through serializeDocx → patchTab so the file
@@ -1293,6 +1348,33 @@ export function DocxEditor({ tab }: Props): JSX.Element {
     refocusActiveBlock();
   };
 
+  const setKind = (kind: DocxBlockKind) => {
+    if (!activeBlock) return;
+    updateBlock(activeBlock.id, { kind });
+    refocusActiveBlock();
+  };
+
+  const setHighlight = (color: DocxHighlightColor | undefined) => {
+    if (!activeBlock) return;
+    const cur = activeBlock.style ?? {};
+    updateBlock(activeBlock.id, { style: normalizeStyle({ ...cur, highlight: color }) });
+    refocusActiveBlock();
+  };
+
+  const setLineSpacing = (mult: number | undefined) => {
+    if (!activeBlock) return;
+    const cur = activeBlock.style ?? {};
+    updateBlock(activeBlock.id, { style: normalizeStyle({ ...cur, lineSpacing: mult }) });
+    refocusActiveBlock();
+  };
+
+  const togglePageBreak = () => {
+    if (!activeBlock) return;
+    updateBlock(activeBlock.id, {
+      pageBreakBefore: activeBlock.pageBreakBefore ? undefined : true,
+    });
+  };
+
   /**
    * Toggle the active block's hyperlink. Opens an inline floating dialog
    * (`LinkEditDialog`) with the current value pre-filled — committing an
@@ -1629,20 +1711,28 @@ export function DocxEditor({ tab }: Props): JSX.Element {
         if (target) void insertImageBlockFromFile(imageFile, target);
       }}
     >
-      {!previewMode && <Banner />}
-      {!previewMode && (
+      {/* R414 — toolbar stays visible in preview mode. Preview only strips
+          the page-level editing chrome (grips, gutters, rings); the blocks
+          themselves remain editable (see RichBlock), so every toolbar
+          action still works while inspecting the print appearance. */}
+      {(
         <FormatToolbar
           block={activeBlock}
+          previewMode={previewMode}
           pageSize={model.pageSize}
           pageMargins={model.pageMargins}
           navOpen={navOpen}
           onToggleNav={() => setNavOpen((v) => !v)}
           onToggleStyle={toggleStyle}
+          onSetKind={setKind}
           onSetAlign={setAlign}
           onSetColor={setColor}
           onClearColor={clearColor}
           onSetFontSize={setFontSize}
           onSetFontFamily={setFontFamily}
+          onSetHighlight={setHighlight}
+          onSetLineSpacing={setLineSpacing}
+          onTogglePageBreak={togglePageBreak}
           onToggleLink={setOrToggleLink}
           onInsertTable={() => activeBlock && insertTableAfter(activeBlock.id)}
           onInsertImage={() => {
@@ -1667,7 +1757,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
           onSetPageSize={setPageSize}
           onTogglePageOrientation={togglePageOrientation}
           onSetPageMargins={setPageMargins}
-          onEnterPreview={() => setPreviewMode(true)}
+          onTogglePreview={() => setPreviewMode((v) => !v)}
           onOpenFind={() => {
             // Mirror the Ctrl+F handler — close any conflicting dialog and
             // refocus the query input via the nonce so repeat clicks behave
@@ -1698,7 +1788,11 @@ export function DocxEditor({ tab }: Props): JSX.Element {
         {/* Word's Navigation Pane — toggled via the toolbar's outline icon
             or persisted via localStorage. Lives outside the scrolling page-
             sheet container so it stays put while the document scrolls. */}
-        {!previewMode && navOpen && (
+        {/* R414 — nav pane no longer hidden by preview: jumping to a heading
+            while inspecting print appearance is a legitimate flow, and the
+            toolbar's nav toggle staying functional in preview requires the
+            panel to actually appear. */}
+        {navOpen && (
           <DocxNavPanel
             tabId={tab.id}
             outline={outline}
@@ -1839,7 +1933,8 @@ export function DocxEditor({ tab }: Props): JSX.Element {
               className="absolute top-3 right-3 z-30 flex items-center gap-2 rounded-md border bg-background/95 backdrop-blur shadow-sm px-2.5 py-1 text-xs"
             >
               <span className="text-muted-foreground">
-                已選取 <span className="font-medium text-foreground">{selectedBlockIds.size}</span> 個段落 · 拖曳握把整體移動 · Delete 可一併刪除
+                {/* R409 — i18n: text split around the styled count span */}
+                {t('已選取 ', '')}<span className="font-medium text-foreground">{selectedBlockIds.size}</span>{t(' 個段落 · 拖曳握把整體移動 · Delete 可一併刪除', ' paragraphs selected · drag a handle to move them together · Delete removes them all')}
               </span>
               <button
                 type="button"
@@ -1851,7 +1946,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
                 className="px-1.5 py-0.5 rounded text-destructive hover:text-destructive hover:bg-destructive/10"
                 title={tImp('刪除全部選取的段落 (Delete)', 'Delete all selected paragraphs (Delete)')}
               >
-                刪除
+                {t('刪除', 'Delete')}
               </button>
               <button
                 type="button"
@@ -1859,7 +1954,7 @@ export function DocxEditor({ tab }: Props): JSX.Element {
                 className="px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-secondary"
                 title={tImp('取消選取 (Esc)', 'Clear selection (Esc)')}
               >
-                取消
+                {t('取消', 'Cancel')}
               </button>
             </div>
           )}
@@ -2066,7 +2161,8 @@ export function DocxEditor({ tab }: Props): JSX.Element {
         // 段落 substituted for 儲存格. */}
         <div className="pointer-events-none absolute inset-0 bg-primary/5 border-2 border-dashed border-primary/40 z-50 flex items-center justify-center">
           <div className="px-3 py-1.5 rounded bg-background/90 text-xs text-primary border border-primary/40 shadow">
-            放開即插入圖片到游標所在段落
+            {/* R409 — i18n */}
+            {t('放開即插入圖片到游標所在段落', "Release to insert the image at the cursor's paragraph")}
           </div>
         </div>
       )}
@@ -2092,6 +2188,7 @@ function DocxNavPanel({
   activeIdx: number;
   onJump: (id: string) => void;
 }): JSX.Element {
+  const t = useT(); // R409 — i18n for header + empty-outline hint
   // The `<aside>` is the actual scroll container (overflow-auto); the
   // `<ul>` inside it has no overflow style. We need a separate ref on
   // the aside to read/write its scrollTop for memory — `listRef` would
@@ -2176,11 +2273,11 @@ function DocxNavPanel({
         className="px-3 py-2 text-[10px] uppercase tracking-wider text-muted-foreground font-medium border-b"
         title={tImp('↑/↓ 切換 · Home/End 跳到首/末', '↑/↓ to switch · Home/End to jump to first/last')}
       >
-        導覽窗格
+        {t('導覽窗格', 'Navigation pane')}
       </div>
       {outline.length === 0 ? (
         <div className="px-3 py-2 text-[11px] text-muted-foreground italic">
-          （沒有標題。將段落改成「標題 1/2/3…」即可建立大綱）
+          {t('（沒有標題。將段落改成「標題 1/2/3…」即可建立大綱）', '(No headings. Set a paragraph to Heading 1/2/3… to build an outline)')}
         </div>
       ) : (
         <ul ref={listRef} className="py-1">
@@ -2290,21 +2387,6 @@ function PageSheet({
   );
 }
 
-function Banner(): JSX.Element {
-  const t = useT();
-  return (
-    <div className="flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-100 border-b border-amber-300 text-amber-800">
-      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-      <span>
-        {t(
-          'Word MVP 編輯：粗體 / 斜體 / 底線可對選取範圍套用；對齊 / 字色 / 字型仍以整段為單位。圖片、表格的部分樣式在 round-trip 會被簡化。',
-          'Word MVP editor: bold / italic / underline apply to selections; alignment / color / font are per-paragraph. Some image and table styling is simplified during round-trip.',
-        )}
-      </span>
-    </div>
-  );
-}
-
 /** Common Word font sizes in points. */
 const DOCX_FONT_SIZES_PT = [9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72];
 
@@ -2315,11 +2397,15 @@ function FormatToolbar({
   navOpen,
   onToggleNav,
   onToggleStyle,
+  onSetKind,
   onSetAlign,
   onSetColor,
   onClearColor,
   onSetFontSize,
   onSetFontFamily,
+  onSetHighlight,
+  onSetLineSpacing,
+  onTogglePageBreak,
   onToggleLink,
   onInsertTable,
   onInsertImage,
@@ -2328,21 +2414,29 @@ function FormatToolbar({
   onSetPageSize,
   onTogglePageOrientation,
   onSetPageMargins,
-  onEnterPreview,
+  onTogglePreview,
   onOpenFind,
   onOpenGoto,
+  previewMode,
 }: {
   block: DocxBlock | null;
   pageSize: DocxPageSize;
   pageMargins: DocxPageMargins;
   navOpen: boolean;
+  /** R414 — the toolbar persists through preview mode; the Eye button shows
+   *  pressed state and the tooltip flips between enter / exit. */
+  previewMode: boolean;
   onToggleNav: () => void;
-  onToggleStyle: (k: 'bold' | 'italic' | 'underline') => void;
+  onToggleStyle: (k: 'bold' | 'italic' | 'underline' | 'strikethrough') => void;
+  onSetKind: (k: DocxBlockKind) => void;
   onSetAlign: (a: DocxAlign) => void;
   onSetColor: (hex: string) => void;
   onClearColor: () => void;
   onSetFontSize: (pt: number | undefined) => void;
   onSetFontFamily: (name: string | undefined) => void;
+  onSetHighlight: (color: DocxHighlightColor | undefined) => void;
+  onSetLineSpacing: (mult: number | undefined) => void;
+  onTogglePageBreak: () => void;
   onToggleLink: () => void;
   onInsertTable: () => void;
   onInsertImage: () => void;
@@ -2355,7 +2449,7 @@ function FormatToolbar({
   onSetPageSize: (s: DocxPageSize) => void;
   onTogglePageOrientation: () => void;
   onSetPageMargins: (m: DocxPageMargins) => void;
-  onEnterPreview: () => void;
+  onTogglePreview: () => void;
   onOpenFind: () => void;
   onOpenGoto: () => void;
 }): JSX.Element {
@@ -2363,6 +2457,10 @@ function FormatToolbar({
   const disabled = !block;
   const style = block?.style ?? {};
   const tDisabled = t('請先點選一個段落', 'Select a paragraph first');
+  // Kind switching / page-break flags only apply to paragraph-family blocks
+  // — tables and images keep their structural kind.
+  const isParaBlock = !!block && block.kind !== 'table' && block.kind !== 'image';
+  const styleOpt = block ? STYLE_OPTIONS.find((o) => o.kind === block.kind) : undefined;
   // Wrapper no longer dims the whole bar when no block is active. Previously
   // we set `opacity-50` on the container, but several controls
   // (nav-pane toggle / image insert / page settings / find / print preview)
@@ -2384,6 +2482,57 @@ function FormatToolbar({
       >
         <List className="h-3.5 w-3.5" />
       </ToolbarBtn>
+      <Divider />
+      {/* Style dropdown — names the active block's kind and switches it.
+          Same Radix dropdown pattern as PageSettingsMenu below; disabled for
+          table / image blocks whose kind is structural, not typographic. */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            disabled={!isParaBlock}
+            title={
+              disabled
+                ? tDisabled
+                : !isParaBlock
+                  ? t('表格 / 圖片區塊無法切換段落樣式', 'Tables / images cannot switch paragraph style')
+                  : t('段落樣式', 'Paragraph style')
+            }
+            aria-label={t('段落樣式', 'Paragraph style')}
+            className={cn(
+              'inline-flex items-center gap-1 h-7 px-2 rounded text-xs min-w-[5.5rem] justify-between',
+              'text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors',
+              !isParaBlock && 'opacity-50 cursor-not-allowed',
+            )}
+          >
+            <span className="truncate">
+              {block
+                ? styleOpt
+                  ? t(styleOpt.zh, styleOpt.en)
+                  : KIND_LABEL[block.kind]
+                : t('樣式', 'Style')}
+            </span>
+            <span className="text-[10px] text-muted-foreground/70">▾</span>
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-[10rem]">
+          <DropdownMenuLabel>{t('段落樣式', 'Paragraph style')}</DropdownMenuLabel>
+          {STYLE_OPTIONS.map((o) => (
+            <DropdownMenuItem
+              key={o.kind}
+              onSelect={() => onSetKind(o.kind)}
+              className={cn(
+                o.kind === 'heading1' && 'text-base font-bold',
+                o.kind === 'heading2' && 'font-bold',
+                o.kind === 'heading3' && 'font-semibold',
+                block?.kind === o.kind && 'bg-accent text-accent-foreground',
+              )}
+            >
+              {t(o.zh, o.en)}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
       <Divider />
       {/* Tooltips spell out the keyboard shortcuts the editor binds (see
           useFormatShortcuts at toggleStyle / Ctrl+F at setFindOpen / Ctrl+G
@@ -2410,6 +2559,9 @@ function FormatToolbar({
       <ToolbarBtn active={!!style.underline} disabled={disabled} title={disabled ? tDisabled : t('底線 (Ctrl+U)', 'Underline (Ctrl+U)')} onClick={() => onToggleStyle('underline')}>
         <Underline className="h-3.5 w-3.5" />
       </ToolbarBtn>
+      <ToolbarBtn active={!!style.strikethrough} disabled={disabled} title={disabled ? tDisabled : t('刪除線 (Ctrl+Shift+X)', 'Strikethrough (Ctrl+Shift+X)')} onClick={() => onToggleStyle('strikethrough')}>
+        <Strikethrough className="h-3.5 w-3.5" />
+      </ToolbarBtn>
       <ToolbarBtn
         active={!!block?.link}
         disabled={disabled}
@@ -2431,6 +2583,48 @@ function FormatToolbar({
       <ToolbarBtn active={block?.align === 'justify'} disabled={disabled} title={disabled ? tDisabled : t('兩端對齊', 'Justify')} onClick={() => onSetAlign('justify')}>
         <AlignJustify className="h-3.5 w-3.5" />
       </ToolbarBtn>
+      {/* Line spacing — paragraph-level like alignment, so it lives in the
+          same cluster. 預設 clears the key (serializer falls back to the
+          document default). */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            disabled={disabled}
+            title={disabled ? tDisabled : t('行距', 'Line spacing')}
+            aria-label={t('行距', 'Line spacing')}
+            aria-pressed={!!style.lineSpacing}
+            className={cn(
+              'h-7 w-7 inline-flex items-center justify-center rounded transition-colors',
+              style.lineSpacing
+                ? 'bg-primary/20 text-primary'
+                : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
+              disabled && 'cursor-not-allowed opacity-50',
+            )}
+          >
+            <AlignVerticalSpaceAround className="h-3.5 w-3.5" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-[8rem]">
+          <DropdownMenuLabel>{t('行距', 'Line spacing')}</DropdownMenuLabel>
+          {LINE_SPACING_OPTIONS.map((o) => (
+            <DropdownMenuItem
+              key={o.v}
+              onSelect={() => onSetLineSpacing(o.v)}
+              className={cn(style.lineSpacing === o.v && 'bg-accent text-accent-foreground')}
+            >
+              {t(o.zh, o.en)}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => onSetLineSpacing(undefined)}
+            className={cn(!style.lineSpacing && 'bg-accent text-accent-foreground')}
+          >
+            {t('預設', 'Default')}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <Divider />
       {/* R98 — extend R97's disabled-state tooltip flip from PptxEditor /
           XlsxEditor to this third sibling. R87 already wired the flip onto
@@ -2485,6 +2679,56 @@ function FormatToolbar({
           </button>
         ) : null}
       </span>
+      {/* Highlight palette — six named docx highlight colors + clear. The
+          color bar under the icon mirrors the Palette swatch convention. */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            disabled={disabled}
+            title={disabled ? tDisabled : t('螢光標示', 'Text highlight')}
+            aria-label={t('螢光標示', 'Text highlight')}
+            aria-pressed={!!style.highlight}
+            className={cn(
+              'h-7 w-7 inline-flex items-center justify-center rounded transition-colors',
+              style.highlight
+                ? 'bg-primary/20 text-primary'
+                : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
+              disabled && 'cursor-not-allowed opacity-50',
+            )}
+          >
+            <span className="relative">
+              <Highlighter className="h-3.5 w-3.5" />
+              <span
+                className="absolute -bottom-0.5 left-0 right-0 h-0.5 rounded"
+                style={{
+                  background: style.highlight ? HIGHLIGHT_CSS[style.highlight] : 'transparent',
+                }}
+              />
+            </span>
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-[9rem]">
+          <DropdownMenuLabel>{t('螢光標示', 'Highlight')}</DropdownMenuLabel>
+          {HIGHLIGHT_COLORS.map((h) => (
+            <DropdownMenuItem
+              key={h.id}
+              onSelect={() => onSetHighlight(h.id)}
+              className={cn(style.highlight === h.id && 'bg-accent text-accent-foreground')}
+            >
+              <span
+                className="h-3 w-3 rounded-sm border border-border shrink-0"
+                style={{ background: h.css }}
+              />
+              {t(h.zh, h.en)}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => onSetHighlight(undefined)}>
+            {t('清除', 'Clear')}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <select
         disabled={disabled}
         value={style.fontFamily ?? ''}
@@ -2588,6 +2832,24 @@ function FormatToolbar({
       >
         <Code2 className="h-3.5 w-3.5" />
       </ToolbarBtn>
+      {/* Page-break-before toggle — flags the active block so the serializer
+          emits a page break ahead of it. Paragraph-family blocks only. */}
+      <ToolbarBtn
+        active={!!block?.pageBreakBefore}
+        disabled={!isParaBlock}
+        title={
+          disabled
+            ? tDisabled
+            : !isParaBlock
+              ? t('表格 / 圖片區塊不支援分頁符', 'Tables / images do not support page breaks')
+              : block?.pageBreakBefore
+                ? t('移除此段前的分頁符', 'Remove page break before this paragraph')
+                : t('在此段前插入分頁符', 'Insert page break before this paragraph')
+        }
+        onClick={onTogglePageBreak}
+      >
+        <SeparatorHorizontal className="h-3.5 w-3.5" />
+      </ToolbarBtn>
       <Divider />
       <PageSettingsMenu
         pageSize={pageSize}
@@ -2622,11 +2884,22 @@ function FormatToolbar({
       <ToolbarBtn disabled={false} title={t('跳至段落… (Ctrl+G)', 'Go to paragraph… (Ctrl+G)')} onClick={onOpenGoto}>
         <Pilcrow className="h-3.5 w-3.5" />
       </ToolbarBtn>
-      {/* Print-preview toggle — hides every editing affordance (block grips,
-          +/trash chrome, navigation pane, this toolbar itself) so the user
-          can sanity-check what the page actually looks like before exporting.
-          Esc returns to edit mode; the floating pill in the desk also exits. */}
-      <ToolbarBtn disabled={false} title={t('預覽列印外觀（隱藏編輯外框，Esc 返回）', 'Print preview (hide editor chrome, Esc to return)')} onClick={onEnterPreview}>
+      {/* Print-preview toggle — hides the page-level editing affordances
+          (block grips, margin gutters, rings) so the user can sanity-check
+          what the page actually looks like before exporting. R414: the
+          toolbar itself and the nav pane stay visible — blocks remain
+          editable in preview, so formatting actions keep working. Esc or
+          a second click returns to edit mode; the floating pill too. */}
+      <ToolbarBtn
+        disabled={false}
+        active={previewMode}
+        title={
+          previewMode
+            ? t('退出預覽（Esc）', 'Exit preview (Esc)')
+            : t('預覽列印外觀（隱藏編輯外框，Esc 返回）', 'Print preview (hide editor chrome, Esc to return)')
+        }
+        onClick={onTogglePreview}
+      >
         <Eye className="h-3.5 w-3.5" />
       </ToolbarBtn>
       {/* Selection status pushed to the right edge so the (left-side)
@@ -2782,9 +3055,12 @@ function normalizeStyle(s: DocxBlockStyle): DocxBlockStyle | undefined {
   if (s.bold) out.bold = true;
   if (s.italic) out.italic = true;
   if (s.underline) out.underline = true;
+  if (s.strikethrough) out.strikethrough = true;
   if (s.color) out.color = s.color;
   if (s.fontSize) out.fontSize = s.fontSize;
   if (s.fontFamily) out.fontFamily = s.fontFamily;
+  if (s.highlight) out.highlight = s.highlight;
+  if (s.lineSpacing) out.lineSpacing = s.lineSpacing;
   return Object.keys(out).length === 0 ? undefined : out;
 }
 
@@ -2820,6 +3096,7 @@ function BlockRow({
   onStartMove: (e: React.PointerEvent) => void;
   onResetPosition: () => void;
 }): JSX.Element {
+  const t = useT(); // R409 — i18n for the empty-paragraph placeholder
   const textClass = useMemo(() => kindTextClass(block.kind), [block.kind]);
   const inlineStyle = useMemo<React.CSSProperties>(() => {
     const s = block.style ?? {};
@@ -2827,16 +3104,21 @@ function BlockRow({
     // Hyperlink blocks force the canonical Word link visual (blue +
     // underline) so the user immediately sees that the run will export as
     // a hyperlink. Block-level color/underline still apply for non-links.
+    const deco: string[] = [];
+    if (s.underline || isLink) deco.push('underline');
+    if (s.strikethrough) deco.push('line-through');
     return {
       fontWeight: s.bold ? 'bold' : undefined,
       fontStyle: s.italic ? 'italic' : undefined,
-      textDecoration: s.underline || isLink ? 'underline' : undefined,
+      textDecoration: deco.length > 0 ? deco.join(' ') : undefined,
       color: isLink ? '#0563C1' : s.color ? `#${s.color}` : undefined,
       textAlign: block.align,
       // pt → px (rough 1.333× factor for screen rendering); we don't try to be
       // exact since Word's render is very different anyway.
       fontSize: s.fontSize ? `${Math.round(s.fontSize * 1.333)}px` : undefined,
       fontFamily: withEmojiFallback(s.fontFamily),
+      backgroundColor: s.highlight ? HIGHLIGHT_CSS[s.highlight] : undefined,
+      lineHeight: s.lineSpacing,
     };
   }, [block.style, block.align, block.link]);
   const floatStyle = position
@@ -2848,11 +3130,27 @@ function BlockRow({
       }
     : undefined;
   return (
+    <>
+      {/* Page-break marker — edit-mode affordance only; preview shows the
+          page exactly as it would print (the editor doesn't paginate). */}
+      {block.pageBreakBefore && !previewMode && (
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground/70 select-none">
+          <div className="flex-1 border-t border-dashed border-muted-foreground/40" />
+          <span>{t('分頁', 'Page break')}</span>
+          <div className="flex-1 border-t border-dashed border-muted-foreground/40" />
+        </div>
+      )}
     <div
       data-block-id={block.id}
       style={floatStyle}
       className={cn(
-        'group flex gap-1 items-start rounded transition-colors',
+        // R413 — `relative` anchors the margin-gutter controls below. The
+        // grip + kind chip used to be IN-FLOW flex children, pushing the
+        // text ~90px right of where print/preview renders it; they now
+        // live in an absolutely-positioned gutter in the page's left
+        // margin so the text column starts exactly at the page margin in
+        // both edit and preview modes (WYSIWYG alignment).
+        'group relative flex gap-1 items-start rounded transition-colors',
         active && !previewMode && 'ring-1 ring-primary/30',
         position && !previewMode && 'bg-background/80 backdrop-blur-[1px] ring-1 ring-primary/20 px-1 z-10',
         // Marquee selection wins over the focus ring — when the user is in
@@ -2862,6 +3160,19 @@ function BlockRow({
       )}
     >
       {!previewMode && (
+        // R413 — hover/focus-revealed margin gutter (Notion-style). `invisible`
+        // (not just opacity-0) so the hidden buttons can't swallow pointer
+        // events meant for the page-margin marquee. Revealed while the row is
+        // hovered, focused (caret inside), active, or marquee-selected.
+        <div
+          className={cn(
+            'absolute right-full top-0 mr-1.5 flex items-start gap-1',
+            'opacity-0 invisible transition-opacity',
+            'group-hover:visible group-hover:opacity-100',
+            'group-focus-within:visible group-focus-within:opacity-100',
+            (active || selected) && 'visible opacity-100',
+          )}
+        >
         <button
           type="button"
           onPointerDown={onStartMove}
@@ -2874,8 +3185,7 @@ function BlockRow({
         >
           <GripVertical className="h-3.5 w-3.5" />
         </button>
-      )}
-      {!previewMode && (() => {
+      {(() => {
         // R111 — disclose the cycle order + state-aware "next" target.
         // Prior shape was `title="點擊切換樣式"` — discloses the gesture
         // but nothing about the rotation, leaving three opaque facets:
@@ -2932,6 +3242,8 @@ function BlockRow({
           </button>
         );
       })()}
+        </div>
+      )}
       <div className="flex-1 min-w-0 relative">
         <RichBlock
           blockId={block.id}
@@ -2942,7 +3254,7 @@ function BlockRow({
           }
           textClass={textClass}
           inlineStyle={inlineStyle}
-          placeholder={block.kind === 'paragraph' ? '輸入文字…' : ''}
+          placeholder={block.kind === 'paragraph' ? t('輸入文字…', 'Type text…') : ''}
           active={active}
           previewMode={previewMode}
           onFocus={onFocus}
@@ -2951,7 +3263,17 @@ function BlockRow({
         />
       </div>
       {!previewMode && (
-        <div className="opacity-0 group-hover:opacity-100 flex flex-col gap-1 mt-1">
+        // R413 — moved out of the flex flow into the right page margin so the
+        // text column spans the full printable width (matches print/preview).
+        <div
+          className={cn(
+            'absolute left-full top-0 ml-1 flex flex-col gap-1 mt-1',
+            'opacity-0 invisible transition-opacity',
+            'group-hover:visible group-hover:opacity-100',
+            'group-focus-within:visible group-focus-within:opacity-100',
+            active && 'visible opacity-100',
+          )}
+        >
           <button
             type="button"
             onMouseDown={(e) => e.preventDefault()}
@@ -3020,6 +3342,7 @@ function BlockRow({
         </div>
       )}
     </div>
+    </>
   );
 }
 
@@ -3075,6 +3398,7 @@ function TableBlock({
   onStartMove: (e: React.PointerEvent) => void;
   onResetPosition: () => void;
 }): JSX.Element {
+  const t = useT(); // R409 — i18n for row/column controls
   const rows = block.rows ?? [['']];
   const cols = rows[0]?.length ?? 1;
 
@@ -3223,27 +3547,37 @@ function TableBlock({
       data-block-id={block.id}
       style={floatStyle}
       className={cn(
-        'group flex gap-1 items-start rounded transition-colors',
+        // R413 — same margin-gutter layout as BlockRow: controls float in
+        // the page margins so the table spans the true printable width.
+        'group relative flex gap-1 items-start rounded transition-colors',
         active && !previewMode && 'ring-1 ring-primary/30',
         position && !previewMode && 'bg-background/80 backdrop-blur-[1px] ring-1 ring-primary/20 px-1 z-10',
         selected && !previewMode && 'ring-2 ring-primary/70 bg-primary/5',
       )}
     >
       {!previewMode && (
-        <button
-          type="button"
-          onPointerDown={onStartMove}
-          onMouseDown={(e) => e.preventDefault()}
-          title={tImp('拖曳到任意位置', 'Drag to any position')}
-          className="mt-1 shrink-0 p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-secondary cursor-grab active:cursor-grabbing touch-none"
+        <div
+          className={cn(
+            'absolute right-full top-0 mr-1.5 flex items-start gap-1',
+            'opacity-0 invisible transition-opacity',
+            'group-hover:visible group-hover:opacity-100',
+            'group-focus-within:visible group-focus-within:opacity-100',
+            (active || selected) && 'visible opacity-100',
+          )}
         >
-          <GripVertical className="h-3.5 w-3.5" />
-        </button>
-      )}
-      {!previewMode && (
-        <span className="mt-1 shrink-0 text-xs px-1.5 py-0.5 rounded bg-secondary text-muted-foreground w-16 text-center">
-          {KIND_LABEL.table}
-        </span>
+          <button
+            type="button"
+            onPointerDown={onStartMove}
+            onMouseDown={(e) => e.preventDefault()}
+            title={tImp('拖曳到任意位置', 'Drag to any position')}
+            className="mt-1 shrink-0 p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-secondary cursor-grab active:cursor-grabbing touch-none"
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </button>
+          <span className="mt-1 shrink-0 text-xs px-1.5 py-0.5 rounded bg-secondary text-muted-foreground w-16 text-center">
+            {KIND_LABEL.table}
+          </span>
+        </div>
       )}
       <div className="flex-1 min-w-0">
         <table className="border-collapse w-full text-xs">
@@ -3289,7 +3623,7 @@ function TableBlock({
                     <button
                       type="button"
                       disabled={rows.length <= 1}
-                      title={rows.length <= 1 ? '至少要保留一列' : '刪除此列'}
+                      title={rows.length <= 1 ? t('至少要保留一列', 'At least one row must remain') : t('刪除此列', 'Delete this row')}
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => removeRow(r)}
                       className="p-0.5 rounded text-muted-foreground hover:text-destructive disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
@@ -3310,7 +3644,7 @@ function TableBlock({
               onClick={addRow}
               className="hover:text-foreground inline-flex items-center gap-1"
             >
-              <Rows className="h-3 w-3" /> 新增列
+              <Rows className="h-3 w-3" /> {t('新增列', 'Add row')}
             </button>
             <button
               type="button"
@@ -3318,23 +3652,32 @@ function TableBlock({
               onClick={addCol}
               className="hover:text-foreground inline-flex items-center gap-1"
             >
-              <Columns className="h-3 w-3" /> 新增欄
+              <Columns className="h-3 w-3" /> {t('新增欄', 'Add column')}
             </button>
             <button
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => removeCol(cols - 1)}
               disabled={cols <= 1}
-              title={cols <= 1 ? '至少要保留一欄' : '刪除最右側的欄'}
+              title={cols <= 1 ? t('至少要保留一欄', 'At least one column must remain') : t('刪除最右側的欄', 'Delete the rightmost column')}
               className="hover:text-foreground inline-flex items-center gap-1 disabled:opacity-50"
             >
-              刪最右欄
+              {t('刪最右欄', 'Delete last column')}
             </button>
           </div>
         )}
       </div>
       {!previewMode && (
-        <div className="opacity-0 group-hover:opacity-100 flex flex-col gap-1 mt-1">
+        // R413 — right-margin action gutter, mirrors BlockRow.
+        <div
+          className={cn(
+            'absolute left-full top-0 ml-1 flex flex-col gap-1 mt-1',
+            'opacity-0 invisible transition-opacity',
+            'group-hover:visible group-hover:opacity-100',
+            'group-focus-within:visible group-focus-within:opacity-100',
+            active && 'visible opacity-100',
+          )}
+        >
           <button
             type="button"
             onMouseDown={(e) => e.preventDefault()}
@@ -3482,6 +3825,7 @@ function ImageBlockRow({
   onStartMove: (e: React.PointerEvent) => void;
   onResetPosition: () => void;
 }): JSX.Element {
+  const t = useT(); // R409 — i18n for the missing-image fallback
   const img = block.image;
   // Live drag-resize state. Committed via onResize on pointerup.
   const [previewSize, setPreviewSize] = useState<{ w: number; h: number } | null>(null);
@@ -3489,7 +3833,7 @@ function ImageBlockRow({
   if (!img) {
     return (
       <div data-block-id={block.id} className="text-xs text-muted-foreground italic px-2 py-1">
-        （圖片資料缺失）
+        {t('（圖片資料缺失）', '(Image data missing)')}
       </div>
     );
   }
@@ -3560,27 +3904,37 @@ function ImageBlockRow({
       style={floatStyle}
       onClick={onFocus}
       className={cn(
-        'group flex gap-1 items-start rounded transition-colors',
+        // R413 — `relative` anchors the margin gutters (see BlockRow).
+        'group relative flex gap-1 items-start rounded transition-colors',
         active && !previewMode && 'ring-1 ring-primary/30',
         position && !previewMode && 'bg-background/80 backdrop-blur-[1px] ring-1 ring-primary/20 px-1 z-10',
         selected && !previewMode && 'ring-2 ring-primary/70 bg-primary/5',
       )}
     >
       {!previewMode && (
-        <button
-          type="button"
-          onPointerDown={onStartMove}
-          onMouseDown={(e) => e.preventDefault()}
-          title={tImp('拖曳到任意位置', 'Drag to any position')}
-          className="mt-1 shrink-0 p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-secondary cursor-grab active:cursor-grabbing touch-none"
+        // R413 — margin gutter, mirrors BlockRow/TableBlock.
+        <div
+          className={cn(
+            'absolute right-full top-0 mr-1.5 flex items-start gap-1',
+            'opacity-0 invisible transition-opacity',
+            'group-hover:visible group-hover:opacity-100',
+            'group-focus-within:visible group-focus-within:opacity-100',
+            (active || selected) && 'visible opacity-100',
+          )}
         >
-          <GripVertical className="h-3.5 w-3.5" />
-        </button>
-      )}
-      {!previewMode && (
-        <span className="mt-1 shrink-0 text-xs px-1.5 py-0.5 rounded bg-secondary text-muted-foreground w-16 text-center">
-          {KIND_LABEL.image}
-        </span>
+          <button
+            type="button"
+            onPointerDown={onStartMove}
+            onMouseDown={(e) => e.preventDefault()}
+            title={tImp('拖曳到任意位置', 'Drag to any position')}
+            className="mt-1 shrink-0 p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-secondary cursor-grab active:cursor-grabbing touch-none"
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </button>
+          <span className="mt-1 shrink-0 text-xs px-1.5 py-0.5 rounded bg-secondary text-muted-foreground w-16 text-center">
+            {KIND_LABEL.image}
+          </span>
+        </div>
       )}
       <div className={cn('flex-1 min-w-0 flex items-start', justify)}>
         <div className="relative inline-block" style={{ width: liveW, height: liveH }}>
@@ -3614,7 +3968,18 @@ function ImageBlockRow({
         </div>
       </div>
       {!previewMode && (
-        <div className="mt-1 shrink-0 flex items-center gap-0.5">
+        // R413 — right-margin action gutter, mirrors BlockRow/TableBlock.
+        // The cluster keeps its horizontal layout but is now revealed on
+        // hover/active like its siblings (it sits in the page margin, so
+        // an always-visible cluster would float oddly next to the page).
+        <div
+          className={cn(
+            'absolute left-full top-0 ml-1 mt-1 flex items-center gap-0.5',
+            'opacity-0 invisible transition-opacity',
+            'group-hover:visible group-hover:opacity-100',
+            (active || selected) && 'visible opacity-100',
+          )}
+        >
           {/* R115 — match the two sibling block-action clusters that
               also live in this same parent's three-way kind split:
 
@@ -3649,14 +4014,12 @@ function ImageBlockRow({
               「在後方插入段落」 reused verbatim from the two siblings
               describes what the user will get.
 
-              Layout note: ImageBlockRow's action cluster uses
-              horizontal `flex items-center gap-0.5` (always visible
-              during edit mode) rather than BlockRow/TableBlock's
-              vertical `flex flex-col gap-1` (hover-revealed). That
-              difference is intentional — the image has no caret/
-              focus that would justify hiding actions during typing —
-              and is preserved here. Plus button just slots in as the
-              first item, matching the sibling order Plus → ↺ → 🗑️. */}
+              Layout note (updated R413): the cluster keeps its
+              horizontal `flex items-center gap-0.5` arrangement but now
+              lives in the right page-margin gutter and is hover/active-
+              revealed like BlockRow/TableBlock's vertical clusters.
+              Plus button slots in as the first item, matching the
+              sibling order Plus → ↺ → 🗑️. */}
           <button
             type="button"
             onMouseDown={(e) => e.preventDefault()}
@@ -3892,6 +4255,7 @@ function MarkdownInsertDialog({
   // channel. Returning `undefined` still means "OK, close".
   onCommit: (source: string) => string | undefined;
 }) {
+  const t = useT(); // R409 — i18n for label + sample placeholder
   const [source, setSource] = useState('');
   // R341 — error state widened from boolean to `string | null` so the
   // inline message text comes from the caller (or the local empty-
@@ -3977,7 +4341,7 @@ function MarkdownInsertDialog({
       <div className="text-xs font-medium">{tImp('插入 Markdown 內容', 'Insert Markdown content')}</div>
       <label className="block">
         <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-          Markdown 原始碼
+          {t('Markdown 原始碼', 'Markdown source')}
         </span>
         <textarea
           ref={taRef}
@@ -3989,7 +4353,7 @@ function MarkdownInsertDialog({
             if (error) setError(null);
           }}
           aria-invalid={error ? true : undefined}
-          placeholder={'# 標題\n\n- 項目一\n- 項目二\n\n**粗體** 與 _斜體_ 也可以。'}
+          placeholder={t('# 標題\n\n- 項目一\n- 項目二\n\n**粗體** 與 _斜體_ 也可以。', '# Heading\n\n- Item one\n- Item two\n\n**Bold** and _italic_ work too.')}
           rows={10}
           className={cn(
             'w-full px-2 py-1.5 text-xs font-mono border rounded bg-background outline-none focus:ring-1 resize-y',
@@ -4084,6 +4448,7 @@ function HtmlInsertDialog({
    *  inline (in which case the dialog stays open for the user to fix). */
   onCommit: (source: string) => string | undefined;
 }) {
+  const t = useT(); // R409 — i18n for label + sample placeholder
   const [source, setSource] = useState('');
   const [error, setError] = useState<string | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -4162,7 +4527,7 @@ function HtmlInsertDialog({
       <div className="text-xs font-medium">{tImp('插入 HTML 內容', 'Insert HTML content')}</div>
       <label className="block">
         <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-          HTML 原始碼
+          {t('HTML 原始碼', 'HTML source')}
         </span>
         <textarea
           ref={taRef}
@@ -4172,7 +4537,7 @@ function HtmlInsertDialog({
             if (error) setError(null);
           }}
           aria-invalid={error ? true : undefined}
-          placeholder={'<h2>標題</h2>\n<p><strong>粗體</strong>與<em>斜體</em>。</p>\n<ul>\n  <li>項目一</li>\n  <li>項目二</li>\n</ul>'}
+          placeholder={t('<h2>標題</h2>\n<p><strong>粗體</strong>與<em>斜體</em>。</p>\n<ul>\n  <li>項目一</li>\n  <li>項目二</li>\n</ul>', '<h2>Heading</h2>\n<p><strong>Bold</strong> and <em>italic</em>.</p>\n<ul>\n  <li>Item one</li>\n  <li>Item two</li>\n</ul>')}
           rows={10}
           className={cn(
             'w-full px-2 py-1.5 text-xs font-mono border rounded bg-background outline-none focus:ring-1 resize-y',

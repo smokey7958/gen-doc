@@ -112,7 +112,9 @@ export class ErrorBoundary extends Component<Props, State> {
           ) : null}
           {info?.componentStack ? (
             <details className="text-xs">
-              <summary className="cursor-pointer text-muted-foreground">React component stack</summary>
+              {/* R409 — was hardcoded English; the sibling「堆疊」summary
+                  at line ~107 already routes through tImp. */}
+              <summary className="cursor-pointer text-muted-foreground">{tImp('React 元件堆疊', 'React component stack')}</summary>
               <pre className="mt-2 text-[11px] font-mono bg-secondary/40 border border-border rounded p-3 overflow-auto whitespace-pre-wrap">
                 {info.componentStack}
               </pre>

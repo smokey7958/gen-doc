@@ -25,6 +25,7 @@ import {
   Columns,
   Merge,
   Search,
+  Snowflake,
   Split,
   Trash2,
   Type,
@@ -46,6 +47,7 @@ import {
   deleteRowAt,
   deleteSheet,
   duplicateSheet,
+  injectXlsxFreezePanes,
   injectXlsxImages,
   insertColAt,
   insertRowAt,
@@ -62,6 +64,7 @@ import {
   ERROR_CODES,
   isFormulaSource,
   recomputeAllFormulas,
+  shiftFormula,
   type FormulaErrorCode,
 } from '../lib/xlsx-formula';
 import {
@@ -176,6 +179,17 @@ const EMU_PER_PX = 9525;
  * a later round; for now the panel UI surfaces width/height read-only.
  */
 const DEFAULT_MAX_WIDTH_PX = 480;
+
+/** Default grid column width in px — matches the previous min-w-[80px] sizing. */
+const DEFAULT_COL_WIDTH_PX = 80;
+/** Clamp bounds for column drag-resize / double-click auto-fit. */
+const MIN_COL_WIDTH_PX = 40;
+const MAX_COL_WIDTH_PX = 600;
+/** Clamp bounds for row drag-resize. */
+const MIN_ROW_HEIGHT_PX = 18;
+const MAX_ROW_HEIGHT_PX = 400;
+/** Width of the row-number gutter column (matches the `w-10` header cell). */
+const GUTTER_WIDTH_PX = 40;
 
 /**
  * Pop the OS file picker for an image. Returns null if the user cancels.
@@ -562,6 +576,12 @@ export function XlsxEditor({ tab }: Props): JSX.Element {
       // matters here.
       if (myGen !== flushGenRef.current) return;
     }
+    // Frozen panes aren't modeled by SheetJS / xlsx-js-style either — same
+    // post-process idea as images, same staleness guard after the await.
+    if (next.sheets.some((s) => (s.freezeRows ?? 0) > 0 || (s.freezeCols ?? 0) > 0)) {
+      bytes = await injectXlsxFreezePanes(bytes, next);
+      if (myGen !== flushGenRef.current) return;
+    }
     // R253 — record the bytes we're about to patch so the re-parse effect
     // recognises this tab.data update as self-induced and skips re-parsing.
     // Set BEFORE patchTab because patchTab triggers a synchronous Zustand
@@ -794,7 +814,8 @@ export function XlsxEditor({ tab }: Props): JSX.Element {
       // IPC anomaly during the confirm dialog leaves the user with no
       // toast and no indication of whether the delete actually fired.
       try {
-        if (!(await window.gendoc.app.confirm(`確定要刪除工作表「${name}」？`))) return;
+        // R409 — i18n
+        if (!(await window.gendoc.app.confirm(tImp(`確定要刪除工作表「${name}」？`, `Delete sheet "${name}"?`)))) return;
         snapshotCurrentSheetMemory();
         setModel((prev) => deleteSheet(prev, idx));
       // Drop the deleted sheet's memory; sheets after it shift down by 1.
@@ -955,6 +976,39 @@ export function XlsxEditor({ tab }: Props): JSX.Element {
   const unmergeSelected = () => {
     if (!selection) return;
     mutateSheet((s) => unmergeAt(s, selection.r, selection.c));
+  };
+
+  /** Set the active sheet's frozen-pane split (0 = unfreeze that axis). */
+  const setFreeze = (rows: number, cols: number) => {
+    mutateSheet((s) => ({
+      ...s,
+      freezeRows: rows > 0 ? rows : undefined,
+      freezeCols: cols > 0 ? cols : undefined,
+    }));
+  };
+
+  /** Commit a column width (px) — one setModel, so one undo entry. */
+  const resizeCol = (c: number, px: number) => {
+    mutateSheet((s) => {
+      const widths = Array.from(
+        { length: Math.max(s.colWidths?.length ?? 0, c + 1) },
+        (_, i) => s.colWidths?.[i],
+      );
+      widths[c] = px;
+      return { ...s, colWidths: widths };
+    });
+  };
+
+  /** Commit a row height (px) — one setModel, so one undo entry. */
+  const resizeRow = (r: number, px: number) => {
+    mutateSheet((s) => {
+      const heights = Array.from(
+        { length: Math.max(s.rowHeights?.length ?? 0, r + 1) },
+        (_, i) => s.rowHeights?.[i],
+      );
+      heights[r] = px;
+      return { ...s, rowHeights: heights };
+    });
   };
 
   /**
@@ -1191,6 +1245,90 @@ export function XlsxEditor({ tab }: Props): JSX.Element {
   // of guessing from input.value vs cell.text. The ref form survives across
   // setState/render boundaries so paste handlers see the current state.
   const editingCellRef = useRef(false);
+
+  /**
+   * Fill down / fill right (Ctrl+D / Ctrl+R). Multi-cell selection: the TOP
+   * row (or LEFT column) is replicated across the rest of the rectangle.
+   * Single cell: copies from the neighbour above (or to the left) — Excel
+   * behaviour. Formulas shift relatively via `shiftFormula`; we pre-shift
+   * per target row/col and hand the whole block to `applyPaste` with
+   * origin === anchor (delta 0) so it stamps without re-shifting. One
+   * setModel per fill = one undo entry; the same commit recomputes formulas.
+   */
+  const handleFill = (dir: 'down' | 'right') => {
+    if (!selection) return;
+    const { r1, c1, r2, c2 } = rangeOf(selection);
+    const single = r1 === r2 && c1 === c2;
+    let srcR = r1;
+    let srcC = c1;
+    if (single) {
+      if (dir === 'down') {
+        if (r1 === 0) return; // nothing above to copy
+        srcR = r1 - 1;
+      } else {
+        if (c1 === 0) return; // nothing to the left
+        srcC = c1 - 1;
+      }
+    } else {
+      // A one-row selection has nothing to fill down into (and vice versa).
+      if (dir === 'down' && r1 === r2) return;
+      if (dir === 'right' && c1 === c2) return;
+    }
+    const srcCells =
+      dir === 'down'
+        ? extractRange(sheet, srcR, c1, srcR, c2) // 1×W source row
+        : extractRange(sheet, r1, srcC, r2, srcC); // H×1 source column
+    const block: XlsxCell[][] = [];
+    for (let r = r1; r <= r2; r += 1) {
+      const row: XlsxCell[] = [];
+      for (let c = c1; c <= c2; c += 1) {
+        const src = dir === 'down' ? srcCells[0][c - c1] : srcCells[r - r1][0];
+        const dr = dir === 'down' ? r - srcR : 0;
+        const dc = dir === 'right' ? c - srcC : 0;
+        const next: XlsxCell = { ...src, style: src.style ? { ...src.style } : undefined };
+        if (src.formula) {
+          next.formula = shiftFormula(src.formula, dr, dc);
+          // Placeholder until the recompute pass overwrites it.
+          next.text = next.formula;
+        }
+        row.push(next);
+      }
+      block.push(row);
+    }
+    const payload: RichClipboardPayload = { origin: { r: r1, c: c1 }, cells: block };
+    setModel((prev) => {
+      const next: XlsxModel = {
+        ...prev,
+        sheets: prev.sheets.map((s, i) => (i === activeSheetIdx ? applyPaste(s, r1, c1, payload) : s)),
+      };
+      return { ...next, sheets: recomputeAllFormulas(next.sheets) };
+    });
+  };
+
+  // Ctrl/Cmd+D / +R — fill down / fill right. Lives next to the other
+  // editor-scope shortcuts (Ctrl+B/I/U via useFormatShortcuts, Ctrl+F,
+  // Ctrl+G). Suppressed while a cell is in edit mode and while focus sits
+  // in a non-grid input (formula bar, name box, find dialog) so typing
+  // there keeps native behaviour.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k !== 'd' && k !== 'r') return;
+      const ae = document.activeElement as HTMLElement | null;
+      if (!ae?.closest?.('[data-xlsx-editor-root]')) return;
+      if (editingCellRef.current) return;
+      // Only fire from grid cells (or the grid surface itself) — inputs
+      // without data-cell-r are the formula bar / name box / find dialog.
+      if (ae instanceof HTMLInputElement && ae.dataset.cellR === undefined) return;
+      if (!selection) return;
+      e.preventDefault();
+      handleFill(k === 'd' ? 'down' : 'right');
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheet, selection, activeSheetIdx]);
 
   /**
    * If the destination selection is bigger than a 1×1 paste, replicate the
@@ -1600,6 +1738,9 @@ export function XlsxEditor({ tab }: Props): JSX.Element {
         canUnmerge={canUnmerge}
         onMerge={mergeSelected}
         onUnmerge={unmergeSelected}
+        freezeRows={sheet.freezeRows ?? 0}
+        freezeCols={sheet.freezeCols ?? 0}
+        onSetFreeze={setFreeze}
         onInsertImage={() => {
           void handleAddImage();
         }}
@@ -1687,6 +1828,8 @@ export function XlsxEditor({ tab }: Props): JSX.Element {
           }
           onCommit={commitCell}
           onEditingChange={(v) => { editingCellRef.current = v; }}
+          onResizeCol={resizeCol}
+          onResizeRow={resizeRow}
           images={sheet.images}
           selectedImageId={selectedImageId}
           onImageSelect={setSelectedImageId}
@@ -1770,13 +1913,19 @@ function StatusBar({
 
 function Banner(): JSX.Element {
   const t = useT();
+  // Styles (bold / italic / underline / 顏色 / 字型 / 對齊 / 數值格式)、欄寬列高
+  // and 凍結窗格 now fully round-trip on save→reload — the old "toolbar 顯示
+  // 可能不全" warning no longer applies. The remaining honest caveat is
+  // pre-existing floating images: SheetJS doesn't model drawings, so images
+  // already inside an opened xlsx are dropped on parse (images inserted in
+  // this app do round-trip via injectXlsxImages).
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-100 border-b border-amber-300 text-amber-800">
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
       <span>
         {t(
-          'Excel MVP 編輯：cell 文字／數值 round-trip 保留樣式。粗體 / 對齊 / 顏色寫入 styles.xml；重新開啟後 toolbar 顯示可能不全。',
-          'Excel MVP editor: cell text/values round-trip with styles preserved. Bold / alignment / color write to styles.xml; toolbar display may be incomplete after reopening.',
+          'Excel 編輯：儲存格內容與格式（粗體／顏色／對齊／欄寬列高／凍結窗格）可完整往返保存。原檔既有的浮動圖片在開啟時不會保留。',
+          'Excel editing: cell content and formatting (bold / colors / alignment / column widths / row heights / freeze panes) round-trip on save. Pre-existing floating images in opened files are not preserved.',
         )}
       </span>
     </div>
@@ -1801,7 +1950,7 @@ function ImagePanel({
 }): JSX.Element {
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 border-t bg-secondary/30 overflow-x-auto">
-      <span className="text-[11px] text-muted-foreground shrink-0">圖片 ({images.length}):</span>
+      <span className="text-[11px] text-muted-foreground shrink-0">{tImp('圖片', 'Images')} ({images.length}):</span>{/* R409 — i18n */}
       {images.map((img) => {
         const widthPx = Math.round(img.widthEmu / EMU_PER_PX);
         const heightPx = Math.round(img.heightEmu / EMU_PER_PX);
@@ -1812,7 +1961,6 @@ function ImagePanel({
             className="flex items-center gap-1.5 rounded border border-border bg-background px-1.5 py-1 shrink-0"
           >
             {img.dataUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={img.dataUrl}
                 alt=""
@@ -1900,6 +2048,9 @@ function FormatToolbar({
   canUnmerge,
   onMerge,
   onUnmerge,
+  freezeRows,
+  freezeCols,
+  onSetFreeze,
   onInsertImage,
   onOpenFind,
 }: {
@@ -1920,6 +2071,11 @@ function FormatToolbar({
   canUnmerge: boolean;
   onMerge: () => void;
   onUnmerge: () => void;
+  /** Active sheet's frozen-pane split (0 = none on that axis). */
+  freezeRows: number;
+  freezeCols: number;
+  /** Set the frozen-pane split; (0, 0) unfreezes. */
+  onSetFreeze: (rows: number, cols: number) => void;
   /** Insert image at the current selection's anchor (or A1 when no selection). */
   onInsertImage: () => void;
   onOpenFind: () => void;
@@ -2187,6 +2343,11 @@ function FormatToolbar({
         <Split className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <Divider />
+      {/* Freeze panes — view-level setting, so it stays enabled without a
+          selection (unlike the cell-format cluster). Dropdown mirrors the
+          SheetTabs context-menu styling (bg-popover floating panel). */}
+      <FreezeMenuBtn freezeRows={freezeRows} freezeCols={freezeCols} onSetFreeze={onSetFreeze} />
+      <Divider />
       {/* Image insertion is allowed even with no selection — falls back to A1.
           We keep the button always-enabled so users can stamp an image onto
           a fresh sheet without first having to click into the grid.
@@ -2291,7 +2452,7 @@ function ColorPickerBtn({
       {value ? (
         <button
           type="button"
-          title={disabled && disabledTitle ? disabledTitle : `清除 ${title}`}
+          title={disabled && disabledTitle ? disabledTitle : tImp(`清除 ${title}`, `Clear ${title.toLowerCase()}`)} // R409 — i18n; `title` arrives localized
           onClick={onClear}
           onMouseDown={(e) => e.preventDefault()}
           disabled={disabled}
@@ -2355,6 +2516,99 @@ function ToolbarBtn({
 
 function Divider() {
   return <div className="w-px h-4 bg-border mx-1" />;
+}
+
+/**
+ * Freeze-panes toolbar dropdown. First-row / first-column only (no arbitrary
+ * split) — the four options map straight onto (freezeRows, freezeCols) ∈
+ * {0,1}². The trigger mirrors ToolbarBtn's styling but is written inline so
+ * it can carry aria-haspopup / aria-expanded; the menu reuses the floating
+ * bg-popover panel style of the SheetTabs context menu.
+ */
+function FreezeMenuBtn({
+  freezeRows,
+  freezeCols,
+  onSetFreeze,
+}: {
+  freezeRows: number;
+  freezeCols: number;
+  onSetFreeze: (rows: number, cols: number) => void;
+}): JSX.Element {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const off = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('mousedown', off);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', off);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  const frozen = freezeRows > 0 || freezeCols > 0;
+  const items: Array<{ label: string; rows: number; cols: number; active: boolean; disabled?: boolean }> = [
+    { label: t('凍結首列', 'Freeze first row'), rows: 1, cols: 0, active: freezeRows > 0 && freezeCols === 0 },
+    { label: t('凍結首欄', 'Freeze first column'), rows: 0, cols: 1, active: freezeCols > 0 && freezeRows === 0 },
+    { label: t('凍結首列與首欄', 'Freeze first row & column'), rows: 1, cols: 1, active: freezeRows > 0 && freezeCols > 0 },
+    { label: t('取消凍結', 'Unfreeze'), rows: 0, cols: 0, active: false, disabled: !frozen },
+  ];
+  const title = t('凍結窗格', 'Freeze panes');
+  return (
+    <span ref={wrapRef} className="relative inline-flex">
+      <button
+        type="button"
+        title={title}
+        aria-label={title}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-pressed={frozen}
+        onClick={() => setOpen((o) => !o)}
+        // Same focus-preserving mousedown guard as ToolbarBtn.
+        onMouseDown={(e) => e.preventDefault()}
+        className={cn(
+          'h-7 w-7 inline-flex items-center justify-center rounded transition-colors',
+          frozen
+            ? 'bg-primary/20 text-primary'
+            : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
+        )}
+      >
+        <Snowflake className="h-3.5 w-3.5" />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute left-0 top-full mt-1 z-50 min-w-[170px] rounded-md border bg-popover text-popover-foreground shadow-md py-1 text-xs"
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              onClick={() => {
+                onSetFreeze(item.rows, item.cols);
+                setOpen(false);
+              }}
+              className={cn(
+                'w-full text-left px-3 py-1.5 hover:bg-accent disabled:opacity-40 disabled:pointer-events-none',
+                item.active && 'text-primary font-medium',
+              )}
+            >
+              {item.label}
+              {item.active ? <span className="float-right">✓</span> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </span>
+  );
 }
 
 /** Strip falsy fields so we don't carry empty objects around. */
@@ -2946,7 +3200,7 @@ function SheetTabs({
         </button>
       </div>
       <div className="ml-auto flex items-center gap-2 px-2 text-[10px] text-muted-foreground shrink-0">
-        共 {sheets.length} 張
+        {tImp(`共 ${sheets.length} 張`, `${sheets.length} sheet${sheets.length === 1 ? '' : 's'} total`)} {/* R409 — i18n */}
       </div>
       {ctxMenu && (() => {
         // Estimate bounds the menu's rendered size: 4 items + 1 separator
@@ -3054,6 +3308,8 @@ function Grid({
   onExtend,
   onCommit,
   onEditingChange,
+  onResizeCol,
+  onResizeRow,
   images,
   selectedImageId,
   onImageSelect,
@@ -3074,6 +3330,9 @@ function Grid({
   onCommit: (r: number, c: number, text: string) => void;
   /** Bubbles cell edit-mode transitions up to the editor. */
   onEditingChange: (editing: boolean) => void;
+  /** Commit a column width / row height (px) at gesture end — one undo entry. */
+  onResizeCol: (c: number, px: number) => void;
+  onResizeRow: (r: number, px: number) => void;
   /** Floating images on this sheet — rendered as overlays anchored to cells. */
   images: XlsxImage[] | undefined;
   /** Currently-selected overlay (for highlight + Delete-key removal). */
@@ -3232,6 +3491,125 @@ function Grid({
     [sheet.colCount],
   );
 
+  // ── Column / row drag-resize ─────────────────────────────────────────
+  // Live preview writes the size straight onto the <col> / <tr> DOM node so
+  // a 200-row grid doesn't re-render per mousemove; the model commit (and
+  // therefore the single undo entry) happens once on mouseup via
+  // onResizeCol / onResizeRow. If the gesture ends at the starting size we
+  // restore the DOM style and skip the commit entirely.
+  const sizeDragRef = useRef<{ kind: 'col' | 'row'; index: number; start: number; base: number } | null>(null);
+
+  const clampColW = (px: number) => Math.max(MIN_COL_WIDTH_PX, Math.min(MAX_COL_WIDTH_PX, px));
+  const clampRowH = (px: number) => Math.max(MIN_ROW_HEIGHT_PX, Math.min(MAX_ROW_HEIGHT_PX, px));
+
+  const colElAt = (c: number): HTMLElement | null =>
+    tableRef.current?.querySelectorAll<HTMLElement>('colgroup col')[c + 1] ?? null; // +1 skips gutter col
+  const rowElAt = (r: number): HTMLElement | null =>
+    tableRef.current?.querySelectorAll<HTMLElement>('tbody tr')[r] ?? null;
+
+  const startColResize = (e: React.MouseEvent, c: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const base = sheet.colWidths?.[c] ?? DEFAULT_COL_WIDTH_PX;
+    sizeDragRef.current = { kind: 'col', index: c, start: e.clientX, base };
+    document.body.style.cursor = 'col-resize';
+    const onMove = (ev: MouseEvent) => {
+      const d = sizeDragRef.current;
+      if (!d) return;
+      const el = colElAt(d.index);
+      if (el) el.style.width = `${clampColW(d.base + (ev.clientX - d.start))}px`;
+    };
+    const onUp = (ev: MouseEvent) => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      const d = sizeDragRef.current;
+      sizeDragRef.current = null;
+      if (!d) return;
+      const size = Math.round(clampColW(d.base + (ev.clientX - d.start)));
+      if (size !== Math.round(d.base)) {
+        onResizeCol(d.index, size);
+      } else {
+        const el = colElAt(d.index);
+        if (el) el.style.width = `${d.base}px`; // restore preview
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  const startRowResize = (e: React.MouseEvent, r: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rowEl = rowElAt(r);
+    const base = sheet.rowHeights?.[r] ?? rowEl?.getBoundingClientRect().height ?? 26;
+    sizeDragRef.current = { kind: 'row', index: r, start: e.clientY, base };
+    document.body.style.cursor = 'row-resize';
+    const onMove = (ev: MouseEvent) => {
+      const d = sizeDragRef.current;
+      if (!d) return;
+      const el = rowElAt(d.index);
+      if (el) el.style.height = `${clampRowH(d.base + (ev.clientY - d.start))}px`;
+    };
+    const onUp = (ev: MouseEvent) => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      const d = sizeDragRef.current;
+      sizeDragRef.current = null;
+      if (!d) return;
+      const size = Math.round(clampRowH(d.base + (ev.clientY - d.start)));
+      if (size !== Math.round(d.base)) {
+        onResizeRow(d.index, size);
+      } else {
+        const el = rowElAt(d.index);
+        if (el) el.style.height = sheet.rowHeights?.[d.index] != null ? `${d.base}px` : '';
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  // Double-click on a column edge → auto-fit to the widest cell content.
+  // Measures via canvas measureText (cheaper than reading 200 inputs'
+  // scrollWidth) using the grid's computed base font, honouring per-cell
+  // bold / size / family overrides.
+  const measureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const autoFitCol = (c: number) => {
+    const canvas = measureCanvasRef.current ?? (measureCanvasRef.current = document.createElement('canvas'));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const sample = tableRef.current?.querySelector<HTMLElement>('[data-cell-r][data-cell-c]');
+    const cs = sample ? getComputedStyle(sample) : null;
+    const baseSize = cs ? parseFloat(cs.fontSize) || 12 : 12;
+    const baseFamily = cs?.fontFamily || 'monospace';
+    let max = 0;
+    for (let r = 0; r < sheet.rowCount; r += 1) {
+      const cell = sheet.cells[r]?.[c];
+      const text = cell?.text;
+      if (!text) continue;
+      const st = cell?.style;
+      ctx.font = `${st?.italic ? 'italic ' : ''}${st?.bold ? 'bold ' : ''}${st?.fontSize ?? baseSize}px ${st?.fontFamily || baseFamily}`;
+      const w = ctx.measureText(text).width;
+      if (w > max) max = w;
+    }
+    // Empty column → reset to the default width. +20 ≈ cell padding + slack.
+    onResizeCol(c, max === 0 ? DEFAULT_COL_WIDTH_PX : Math.round(clampColW(max + 20)));
+  };
+
+  // ── Frozen panes ─────────────────────────────────────────────────────
+  // Frozen first-row cells stick below the column-letter header; frozen
+  // first-column cells stick right of the row-number gutter. Both need the
+  // header band's pixel height as their sticky `top` offset.
+  const freezeRows = sheet.freezeRows ?? 0;
+  const freezeCols = sheet.freezeCols ?? 0;
+  const [headerH, setHeaderH] = useState(25);
+  useLayoutEffect(() => {
+    if (freezeRows <= 0) return;
+    const thead = tableRef.current?.querySelector('thead');
+    if (thead) setHeaderH(thead.getBoundingClientRect().height);
+  }, [freezeRows]);
+
   // Native HTML5 drag-and-drop of an image file from the OS into the grid.
   // We accept the first image File on drop, locate the cell under the
   // cursor, and hand off to the editor's `onDropImageFile`. `dragOverDepth`
@@ -3308,24 +3686,66 @@ function Grid({
       }}
     >
     <table ref={tableRef} className="border-collapse text-xs font-mono select-text">
+      {/* Column sizing lives on <col> elements so drag-resize can preview by
+          touching one DOM node instead of re-rendering every cell. First col
+          is the row-number gutter. */}
+      <colgroup>
+        <col style={{ width: GUTTER_WIDTH_PX }} />
+        {colLetters.map((letter, c) => (
+          <col key={letter} style={{ width: sheet.colWidths?.[c] ?? DEFAULT_COL_WIDTH_PX }} />
+        ))}
+      </colgroup>
       <thead className="sticky top-0 z-10">
         <tr>
           <th className="w-10 sticky left-0 z-20 bg-secondary border border-border" />
-          {colLetters.map((letter) => (
+          {colLetters.map((letter, c) => (
             <th
               key={letter}
-              className="min-w-[80px] px-2 py-1 bg-secondary border border-border text-muted-foreground font-normal"
+              className="relative px-2 py-1 bg-secondary border border-border text-muted-foreground font-normal"
             >
               {letter}
+              {/* Column-resize hit zone on the right edge. Drag to resize,
+                  double-click to auto-fit to content. */}
+              <div
+                role="button"
+                aria-label={tImp(`調整 ${letter} 欄寬`, `Resize column ${letter}`)}
+                title={tImp('拖曳調整欄寬 · 雙擊自動調整', 'Drag to resize column · double-click to auto-fit')}
+                className="absolute top-0 bottom-0 -right-[3px] w-[6px] cursor-col-resize z-30"
+                onMouseDown={(e) => startColResize(e, c)}
+                onDoubleClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  autoFitCol(c);
+                }}
+              />
             </th>
           ))}
         </tr>
       </thead>
       <tbody>
-        {sheet.cells.map((row, r) => (
-          <tr key={r}>
-            <th className="sticky left-0 z-10 bg-secondary border border-border text-muted-foreground font-normal px-2">
+        {sheet.cells.map((row, r) => {
+          const rowFrozen = r < freezeRows;
+          return (
+          <tr key={r} style={{ height: sheet.rowHeights?.[r] }}>
+            <th
+              // Frozen first row: the gutter cell sticks on BOTH axes (left
+              // for the gutter, top below the header band) so scrolling in
+              // either direction keeps the row label visible.
+              className={cn(
+                'sticky left-0 bg-secondary border border-border text-muted-foreground font-normal px-2',
+                rowFrozen ? 'z-20' : 'z-10',
+              )}
+              style={rowFrozen ? { top: headerH } : undefined}
+            >
               {r + 1}
+              {/* Row-resize hit zone on the bottom edge of the row number. */}
+              <div
+                role="button"
+                aria-label={tImp(`調整第 ${r + 1} 列高度`, `Resize row ${r + 1}`)}
+                title={tImp('拖曳調整列高', 'Drag to resize row')}
+                className="absolute left-0 right-0 -bottom-[3px] h-[6px] cursor-row-resize z-30"
+                onMouseDown={(e) => startRowResize(e, r)}
+              />
             </th>
             {row.map((cell, c) => {
               // Cells covered by a merge (but not the anchor) are skipped
@@ -3354,17 +3774,29 @@ function Grid({
               const onCopyLeft = !!copyMarker && c === copyMarker.c1 && r >= copyMarker.r1 && r <= copyMarker.r2;
               const onCopyRight = !!copyMarker && c === copyMarker.c2 && r >= copyMarker.r1 && r <= copyMarker.r2;
               const copyColor = copyMarker?.mode === 'cut' ? 'border-amber-500' : 'border-primary';
+              // Frozen panes: first-row cells stick below the header band,
+              // first-column cells stick right of the gutter. `sticky`
+              // replaces (not stacks on) the default `relative` — both
+              // establish the containing block the overlay children need.
+              // Opaque background so scrolled content passes underneath.
+              const colFrozen = c < freezeCols;
+              const cellFrozen = rowFrozen || colFrozen;
               return (
                 <td
                   key={c}
                   rowSpan={rowSpan}
                   colSpan={colSpan}
                   className={cn(
-                    'relative border border-border p-0',
-                    isAnchor && 'outline outline-2 outline-primary outline-offset-[-2px] z-[1]',
+                    'border border-border p-0',
+                    cellFrozen ? 'sticky' : 'relative',
+                    cellFrozen && !cell.style?.bgColor && 'bg-background',
+                    cellFrozen ? (rowFrozen && colFrozen ? 'z-[4]' : 'z-[3]') : isAnchor && 'z-[1]',
+                    isAnchor && 'outline outline-2 outline-primary outline-offset-[-2px]',
                   )}
                   style={{
                     background: cell.style?.bgColor ? `#${cell.style.bgColor}` : undefined,
+                    ...(rowFrozen ? { top: headerH } : {}),
+                    ...(colFrozen ? { left: GUTTER_WIDTH_PX } : {}),
                   }}
                   onMouseDown={(e) => {
                     if (e.shiftKey) {
@@ -3433,7 +3865,8 @@ function Grid({
               );
             })}
           </tr>
-        ))}
+          );
+        })}
       </tbody>
     </table>
     <ImageOverlayLayer
@@ -3453,7 +3886,7 @@ function Grid({
         style={{ zIndex: 20 }}
       >
         <div className="mt-3 px-3 py-1.5 bg-primary text-primary-foreground text-xs rounded shadow">
-          放開以將圖片插入到游標所在儲存格
+          {tImp('放開以將圖片插入到游標所在儲存格', 'Release to insert the image at the selected cell')} {/* R409 — i18n */}
         </div>
       </div>
     ) : null}
@@ -4030,7 +4463,10 @@ function CellInput({
         // Other printable keys flow to native input → onChange.
       }}
       className={cn(
-        'w-full min-w-[80px] px-2 py-1 bg-transparent outline-none',
+        // min-w-0 (not the old min-w-[80px]) so column drag-resize below the
+        // default width actually shrinks the cell — the <colgroup> owns
+        // column sizing now.
+        'w-full min-w-0 px-2 py-1 bg-transparent outline-none',
         editMode ? 'cursor-text bg-primary/5' : 'cursor-cell',
       )}
       style={{

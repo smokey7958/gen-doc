@@ -36,7 +36,7 @@ import {
 } from '../lib/markdown-commands';
 import { cn, slicePreview } from '../lib/utils';
 import { exitExportPdf, tryEnterExportPdf } from '../lib/export-pdf-busy';
-import { tImp } from '../lib/i18n';
+import { tImp, useT } from '../lib/i18n';
 
 interface Props {
   tab: MarkdownTab;
@@ -1087,6 +1087,13 @@ function LinkInsertDialog({
 }) {
   const [url, setUrl] = useState(defaultUrl);
   const [label, setLabel] = useState(defaultLabel);
+  // R407 — bilingual. Was entirely hardcoded Chinese (13 visible strings:
+  // header / labels / placeholders / file-pick button / hints / error /
+  // primary-action button). The dialog is one of the most touched
+  // markdown-tab affordances (Ctrl+K opens link / Ctrl+Alt+I opens image),
+  // and skipping it left the markdown editor surface visibly half-
+  // translated in English mode.
+  const t = useT();
   // True when the user just attempted submit (Enter / 插入 button) with the
   // URL field empty. Surfaces a red border + inline hint instead of the
   // previous silent-close behaviour, which threw away whatever the user had
@@ -1192,7 +1199,7 @@ function LinkInsertDialog({
       if (!file) return;
       const dataUrl = await fileToDataUrl(file);
       if (!dataUrl) {
-        setPickError('讀取檔案失敗');
+        setPickError(tImp('讀取檔案失敗', 'Failed to read file'));
         return;
       }
       setUrl(dataUrl);
@@ -1202,7 +1209,7 @@ function LinkInsertDialog({
         if (base) setLabel(base);
       }
     } catch (err) {
-      setPickError(err instanceof Error ? err.message : '讀取檔案失敗');
+      setPickError(err instanceof Error ? err.message : tImp('讀取檔案失敗', 'Failed to read file'));
     } finally {
       setPicking(false);
     }
@@ -1211,7 +1218,7 @@ function LinkInsertDialog({
     <div
       ref={dialogRef}
       role="dialog"
-      aria-label={isImage ? '插入圖片' : '插入連結'}
+      aria-label={isImage ? t('插入圖片', 'Insert image') : t('插入連結', 'Insert link')}
       className="absolute top-3 right-3 z-30 w-[320px] rounded-md border bg-background shadow-lg p-3 text-sm space-y-2"
       onKeyDown={(e) => {
         // R234 — IME composition guard. Same shape as R231 / R232 / R233.
@@ -1232,10 +1239,10 @@ function LinkInsertDialog({
         }
       }}
     >
-      <div className="text-xs font-medium">{isImage ? '插入圖片' : '插入連結'}</div>
+      <div className="text-xs font-medium">{isImage ? t('插入圖片', 'Insert image') : t('插入連結', 'Insert link')}</div>
       <label className="block">
         <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-          {isImage ? '圖片網址' : '連結網址'}
+          {isImage ? t('圖片網址', 'Image URL') : t('連結網址', 'Link URL')}
         </span>
         <input
           ref={urlRef}
@@ -1250,7 +1257,7 @@ function LinkInsertDialog({
             if (pickError) setPickError(null);
           }}
           aria-invalid={urlError ? true : undefined}
-          placeholder={isImage ? 'https://example.com 或選擇本機檔案' : 'https://example.com'}
+          placeholder={isImage ? t('https://example.com 或選擇本機檔案', 'https://example.com or pick a local file') : 'https://example.com'}
           className={cn(
             'w-full px-2 py-1 text-xs border rounded bg-background outline-none focus:ring-1',
             urlError
@@ -1266,7 +1273,7 @@ function LinkInsertDialog({
           // border + aria-invalid at line 1125 was sighted-only feedback;
           // the alert closes the SR gap.
           <div role="alert" className="mt-1 text-[10px] text-destructive">
-            請先填入網址再插入
+            {t('請先填入網址再插入', 'Enter a URL before inserting')}
           </div>
         )}
         {/* Image-only: file picker. Embeds as a base64 data URL so the .md is
@@ -1286,14 +1293,14 @@ function LinkInsertDialog({
                 picking && 'opacity-50 cursor-not-allowed',
               )}
             >
-              {picking ? '讀取中…' : '從本機選擇檔案…'}
+              {picking ? t('讀取中…', 'Reading…') : t('從本機選擇檔案…', 'Pick a local file…')}
             </button>
             {url.startsWith('data:') && (
               <span
                 className="text-[10px] text-muted-foreground truncate"
-                title={tImp('已嵌入本機圖片（base64 data URL）', 'Local image embedded (base64 data URL)')}
+                title={t('已嵌入本機圖片（base64 data URL）', 'Local image embedded (base64 data URL)')}
               >
-                已嵌入本機圖片
+                {t('已嵌入本機圖片', 'Local image embedded')}
               </span>
             )}
           </div>
@@ -1307,19 +1314,19 @@ function LinkInsertDialog({
       </label>
       <label className="block">
         <span className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-          {isImage ? '替代文字 (alt)' : '顯示文字'}
+          {isImage ? t('替代文字 (alt)', 'Alt text') : t('顯示文字', 'Display text')}
         </span>
         <input
           ref={labelRef}
           type="text"
           value={label}
           onChange={(e) => setLabel(e.target.value)}
-          placeholder={isImage ? '圖片描述' : '連結文字'}
+          placeholder={isImage ? t('圖片描述', 'Image description') : t('連結文字', 'Link text')}
           className="w-full px-2 py-1 text-xs border rounded bg-background outline-none focus:ring-1 focus:ring-primary"
         />
       </label>
       <div className="flex items-center justify-between pt-1">
-        <span className="text-[10px] text-muted-foreground">Esc 取消 · Enter 插入</span>
+        <span className="text-[10px] text-muted-foreground">{t('Esc 取消 · Enter 插入', 'Esc to cancel · Enter to insert')}</span>
         {/* Sibling-shortcut-in-tooltip parity — same R58 fix applied to
             DocxEditor's LinkEditDialog primary button at DocxEditor.tsx:3217
             this round. See fuller rationale there; in short, every other
@@ -1332,10 +1339,10 @@ function LinkInsertDialog({
         <button
           type="button"
           onClick={submit}
-          title={isImage ? '插入圖片 (Enter)' : '插入連結 (Enter)'}
+          title={isImage ? t('插入圖片 (Enter)', 'Insert image (Enter)') : t('插入連結 (Enter)', 'Insert link (Enter)')}
           className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90"
         >
-          插入
+          {t('插入', 'Insert')}
         </button>
       </div>
     </div>
@@ -1386,6 +1393,12 @@ function OutlinePanel({
   activeIdx: number;
   onJump: (e: OutlineEntry) => void;
 }): JSX.Element {
+  // R407 — bilingual heading + empty-state hint. The 大綱 / 字數 / 字元 /
+  // 行 / 欄 markdown chrome was the most visible Chinese leak inside any
+  // .md tab: outline panel is open by default and the status bar paints
+  // every keystroke. Hooks-by-component (OutlinePanel + StatusBar both
+  // subscribe via useT) so a language toggle re-renders both surfaces.
+  const t = useT();
   // The outer `<div>` is the actual scroll container (overflow-auto);
   // the `<ul>` inside has no overflow style. We need a separate ref on
   // that div to read/write scrollTop for memory — `listRef` would give
@@ -1477,13 +1490,16 @@ function OutlinePanel({
           PptxEditor.tsx near "投影片大綱". */}
       <div
         className="px-3 py-2 text-[10px] uppercase tracking-wider text-muted-foreground font-medium border-b"
-        title={tImp('↑/↓ 切換 · Home/End 跳到首/末', '↑/↓ to switch · Home/End to jump to first/last')}
+        title={t('↑/↓ 切換 · Home/End 跳到首/末', '↑/↓ to switch · Home/End to jump to first/last')}
       >
-        大綱
+        {t('大綱', 'Outline')}
       </div>
       {entries.length === 0 ? (
         <div className="px-3 py-2 text-[11px] text-muted-foreground italic">
-          （沒有標題。輸入 # / ## / ### 開始建立大綱）
+          {t(
+            '（沒有標題。輸入 # / ## / ### 開始建立大綱）',
+            '(No headings yet. Type # / ## / ### to start building an outline.)',
+          )}
         </div>
       ) : (
         <ul ref={listRef} className="py-1">
@@ -1524,12 +1540,16 @@ function OutlinePanel({
 }
 
 function StatusBar({ stats }: { stats: DocStats }): JSX.Element {
+  // R407 — bilingual. Wraps 字數 / 字元 / 行/欄 with t() so the bottom
+  // status bar paints in the user's UI language. See OutlinePanel R407
+  // doc-block for the shared rationale.
+  const t = useT();
   return (
     <div className="flex items-center gap-4 px-3 py-1 text-[11px] text-muted-foreground border-t bg-secondary/20">
-      <span>字數 {stats.words.toLocaleString()}</span>
-      <span>字元 {stats.chars.toLocaleString()}</span>
+      <span>{t('字數', 'Words')} {stats.words.toLocaleString()}</span>
+      <span>{t('字元', 'Chars')} {stats.chars.toLocaleString()}</span>
       <span className="ml-auto">
-        行 {stats.line}, 欄 {stats.col}
+        {t('行', 'Line')} {stats.line}, {t('欄', 'Col')} {stats.col}
       </span>
     </div>
   );

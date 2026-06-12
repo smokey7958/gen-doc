@@ -33,6 +33,17 @@
     border-color: hsl(var(--border));
   }
 
+  /* R410 — themed keyboard-focus indicator. Chromium's default focus ring
+     is a 2px black outline that clashes with the soft gray chrome; theme it
+     to --ring instead. Components that draw their own focus treatment
+     (Tailwind `focus-visible:ring-*` paired with `outline-none`) override
+     this per-element, so the rule only reaches elements with no bespoke
+     focus styling — exactly the gaps a keyboard user would otherwise hit. */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 1px;
+  }
+
   html,
   body,
   #root {
@@ -49,6 +60,55 @@
       'PingFang TC', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
       'Segoe UI Symbol', 'Noto Color Emoji';
     overflow: hidden;
+  }
+}
+
+/* R410 — Chromium-only scrollbar theming. This is an Electron app, so
+   `::-webkit-scrollbar` is universally safe (no Firefox/IE fallback needed).
+   The OS-default Windows scrollbar is a heavy opaque gutter that visually
+   competes with the document; a slim padding-box thumb on a transparent
+   track blends into both the chrome and the work canvas. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.35);
+  border-radius: 5px;
+  /* Transparent border + padding-box clip = a 2px inset gutter so the
+     thumb floats instead of touching the scroll container's edge. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.55);
+  background-clip: padding-box;
+}
+
+/* R410 — themed text selection. Default Windows selection is an opaque
+   royal blue that fights the document-editor reading experience; a soft
+   translucent blue keeps the selected text legible. CodeMirror surfaces
+   draw their own selection layer (.cm-selectionBackground) and are
+   unaffected. */
+::selection {
+  background: hsl(217 91% 60% / 0.25);
+}
+
+/* R410 — honor the OS "reduce motion" accessibility setting. The app's
+   animations are decorative (toast slide-in, bounce dots, color fades);
+   collapse them to near-zero for users who opted out of motion. 0.01ms
+   instead of 0 so `transitionend` / `animationend` listeners still fire. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 
@@ -79,6 +139,23 @@
      emoji glyphs, so the browser would otherwise show .notdef boxes. */
   font-family: ui-monospace, 'SFMono-Regular', 'Menlo', 'Consolas', monospace,
     'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
+/* R410 — toast entrance. One short transform/opacity keyframe (GPU-
+   composited, no layout) so a new toast eases in instead of popping.
+   Collapsed by the prefers-reduced-motion block above. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-toast-in {
+  animation: toast-in 150ms ease-out;
 }
 
 /* Diff preview overlay layer for markdown. */

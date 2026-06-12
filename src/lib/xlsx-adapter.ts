@@ -5,12 +5,17 @@
  * Writing uses `xlsx-js-style` so we can persist font / alignment / fill on
  * cells the user has formatted — vanilla SheetJS strips style on write.
  *
- * Round-trip caveat: SheetJS only surfaces fill colours via `.s` on read,
- * so our editor's toolbar state can only reflect fill exactly. Bold/italic/
- * align/font-color *are* written into styles.xml (Excel renders them) but
- * we won't see them in our toolbar after a save→reload cycle. The user can
- * re-apply via the toolbar if they need to mutate further. This is flagged
- * as an MVP limitation in the editor banner.
+ * Style round-trip: SheetJS's community read only surfaces *fill* colours
+ * via `cell.s` (`styles.Fills[fillId]`) — font / alignment never reach the
+ * cell object. To make bold/italic/underline/font-color/size/family/align
+ * survive a save→reload cycle we read with `bookFiles: true` (which keeps
+ * the inflated zip entries on the workbook object) and recover the rest
+ * ourselves: `xl/styles.xml` gives the font + cellXf tables, each sheet's
+ * XML gives the per-cell `s="n"` xf index, and the two combined rebuild the
+ * exact style our serializer wrote. Number formats come back via `cell.z`
+ * (`cellNF: true`). Frozen panes (`<pane state="frozen">`) are read from the
+ * same sheet XML and re-injected on write (see injectXlsxFreezePanes) since
+ * neither SheetJS build models them.
  */
 
 import * as XLSX from 'xlsx';
@@ -110,6 +115,16 @@ export interface XlsxSheet {
   merges?: MergeRange[];
   /** Optional list of floating images anchored over the grid. */
   images?: XlsxImage[];
+  /** Per-column widths in px; `undefined` entry (or missing array) = default.
+   *  Round-trips via SheetJS `!cols` (`wpx`). */
+  colWidths?: (number | undefined)[];
+  /** Per-row heights in px; `undefined` entry = default. Round-trips via
+   *  SheetJS `!rows` (`hpx`). */
+  rowHeights?: (number | undefined)[];
+  /** Frozen-pane split: number of frozen rows from the top. 0/undefined = none. */
+  freezeRows?: number;
+  /** Frozen-pane split: number of frozen columns from the left. */
+  freezeCols?: number;
 }
 
 export interface XlsxModel {
@@ -140,10 +155,27 @@ export function parseXlsx(bytes: Uint8Array): XlsxModel {
       activeSheet: 'Sheet1',
     };
   }
-  const wb = XLSX.read(bytes, { type: 'array', cellDates: true, cellStyles: true });
+  // `bookFiles` keeps the raw (inflated) zip entries on the workbook object
+  // so we can recover what the community read drops: per-cell font/alignment
+  // styling (styles.xml + the sheet XML's `s="n"` xf indexes) and frozen
+  // panes. `cellNF` surfaces number formats as `cell.z`.
+  const wb = XLSX.read(bytes, {
+    type: 'array',
+    cellDates: true,
+    cellStyles: true,
+    cellNF: true,
+    bookFiles: true,
+  });
+  const files = (wb as unknown as { files?: Record<string, { content?: unknown }> }).files;
+  const xfStyles = parseStylesXml(zipEntryText(files, 'xl/styles.xml'));
+  const wbXml = zipEntryText(files, 'xl/workbook.xml');
+  const wbRelsXml = zipEntryText(files, 'xl/_rels/workbook.xml.rels');
+  const sheetPaths = wbXml && wbRelsXml ? sheetXmlPathsFromWorkbook(wbXml, wbRelsXml) : {};
   const sheets: XlsxSheet[] = wb.SheetNames.map((name) => {
     const ws = wb.Sheets[name];
-    return readSheet(name, ws);
+    const path = sheetPaths[name];
+    const meta = parseSheetXmlMeta(path ? zipEntryText(files, path) : null);
+    return readSheet(name, ws, xfStyles, meta);
   });
   return {
     sheets,
@@ -177,6 +209,7 @@ export function serializeXlsx(model: XlsxModel, originalBytes?: Uint8Array): Uin
       const ws = XLSXStyle.utils.aoa_to_sheet(toAoA(sheet));
       // Apply styles after aoa_to_sheet since helper drops them.
       applyStylesToSheet(ws, sheet);
+      applyDimsToSheet(ws, sheet);
       XLSXStyle.utils.book_append_sheet(wb, ws, sheet.name);
     }
   }
@@ -223,22 +256,7 @@ export async function injectXlsxImages(bytes: Uint8Array, model: XlsxModel): Pro
 
   // Map sheet name → sheet xml path via the workbook's <sheet r:id="…"/>
   // entries and the workbook rels' Target attributes.
-  const wbRels: Record<string, string> = {};
-  for (const m of wbRelsXml.matchAll(/<Relationship\s+([^/>]*)\/>/g)) {
-    const attrs = m[1];
-    const id = /Id\s*=\s*"([^"]*)"/.exec(attrs)?.[1];
-    const target = /Target\s*=\s*"([^"]*)"/.exec(attrs)?.[1];
-    if (id && target) wbRels[id] = target;
-  }
-  const sheetPathByName: Record<string, string> = {};
-  for (const m of wbXml.matchAll(/<sheet\s+([^/>]*)\/?>/g)) {
-    const attrs = m[1];
-    const name = /name\s*=\s*"([^"]*)"/.exec(attrs)?.[1];
-    const rid = /r:id\s*=\s*"([^"]*)"/.exec(attrs)?.[1];
-    if (name && rid && wbRels[rid]) {
-      sheetPathByName[name] = `xl/${wbRels[rid]}`;
-    }
-  }
+  const sheetPathByName = sheetXmlPathsFromWorkbook(wbXml, wbRelsXml);
 
   // Pick free drawing/media file numbers so we don't collide with anything
   // the underlying writer left behind (defensive — typically nothing).
@@ -355,6 +373,62 @@ export async function injectXlsxImages(bytes: Uint8Array, model: XlsxModel): Pro
   return out;
 }
 
+/**
+ * Inject frozen-pane definitions into freshly-serialized xlsx bytes.
+ *
+ * Neither SheetJS community nor xlsx-js-style models `!freeze` on read or
+ * write, but both always emit `<sheetViews><sheetView workbookViewId="0"/>
+ * </sheetViews>` per sheet — so we post-process the zip and graft a standard
+ * `<pane … state="frozen"/>` (ECMA-376 §18.3.1.66) into that element. The
+ * parse side reads it back via parseSheetXmlMeta, so freeze settings
+ * round-trip through saves and render frozen in Excel too.
+ *
+ * Returns the bytes unchanged when no sheet has a freeze.
+ */
+export async function injectXlsxFreezePanes(bytes: Uint8Array, model: XlsxModel): Promise<Uint8Array> {
+  const frozen = model.sheets.filter((s) => (s.freezeRows ?? 0) > 0 || (s.freezeCols ?? 0) > 0);
+  if (frozen.length === 0) return bytes;
+
+  const zip = await JSZip.loadAsync(bytes);
+  const wbXml = await zip.file('xl/workbook.xml')?.async('string');
+  const wbRelsXml = await zip.file('xl/_rels/workbook.xml.rels')?.async('string');
+  if (!wbXml || !wbRelsXml) return bytes;
+  const sheetPathByName = sheetXmlPathsFromWorkbook(wbXml, wbRelsXml);
+
+  let touched = false;
+  for (const sheet of frozen) {
+    const path = sheetPathByName[sheet.name];
+    if (!path) continue;
+    const entry = zip.file(path);
+    if (!entry) continue;
+    let xml = await entry.async('string');
+    // Our writer never emits a pane; if one is somehow present, leave it —
+    // double-injecting would produce invalid XML.
+    if (/<pane\b/.test(xml)) continue;
+    const xSplit = sheet.freezeCols ?? 0;
+    const ySplit = sheet.freezeRows ?? 0;
+    const topLeft = XLSX.utils.encode_cell({ r: ySplit, c: xSplit });
+    const activePane = xSplit > 0 && ySplit > 0 ? 'bottomRight' : ySplit > 0 ? 'bottomLeft' : 'topRight';
+    const paneXml =
+      `<pane${xSplit > 0 ? ` xSplit="${xSplit}"` : ''}${ySplit > 0 ? ` ySplit="${ySplit}"` : ''}` +
+      ` topLeftCell="${topLeft}" activePane="${activePane}" state="frozen"/>`;
+    // `pane` must be the first child of `sheetView` (CT_SheetView sequence).
+    if (/<sheetView\b[^>]*\/>/.test(xml)) {
+      xml = xml.replace(/<sheetView\b([^>]*)\/>/, `<sheetView$1>${paneXml}</sheetView>`);
+    } else if (/<sheetView\b[^>]*>/.test(xml)) {
+      xml = xml.replace(/(<sheetView\b[^>]*>)/, `$1${paneXml}`);
+    } else {
+      // No sheetViews element at all — bail rather than guess at element
+      // order in the worksheet schema.
+      continue;
+    }
+    zip.file(path, xml);
+    touched = true;
+  }
+  if (!touched) return bytes;
+  return zip.generateAsync({ type: 'uint8array' });
+}
+
 function mimeForImageExt(ext: string): string {
   switch (ext) {
     case 'png':
@@ -400,7 +474,166 @@ function buildOneCellAnchor(img: XlsxImage, rid: string, idx: number): string {
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-function readSheet(name: string, ws: XLSX.WorkSheet | undefined): XlsxSheet {
+/** Font + alignment subset recovered from styles.xml for one cellXfs entry. */
+type XfStyle = Pick<
+  XlsxCellStyle,
+  'bold' | 'italic' | 'underline' | 'fontSize' | 'fontFamily' | 'fontColor' | 'align'
+>;
+
+/** Per-sheet info recovered from the raw worksheet XML. */
+interface SheetXmlMeta {
+  /** A1 address → cellXfs index, for cells that carried an `s="n"` attr. */
+  xfByAddr: Map<string, number>;
+  /** Frozen-pane split counts from `<pane state="frozen">`, when present. */
+  freezeRows?: number;
+  freezeCols?: number;
+}
+
+/** Minimal XML entity unescape for attribute values we pull via regex. */
+function unescapeXml(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * Decode one raw zip entry (as exposed by `XLSX.read(..., {bookFiles:true})`)
+ * to text. Entries are CFB FileIndex objects whose `content` holds the
+ * already-inflated bytes. Returns null when the entry is missing.
+ */
+function zipEntryText(
+  files: Record<string, { content?: unknown }> | undefined,
+  path: string,
+): string | null {
+  if (!files || !path) return null;
+  const entry = files[path] ?? files[path.replace(/^\//, '')];
+  const content = entry?.content;
+  if (!content) return null;
+  const u8 = content instanceof Uint8Array ? content : Uint8Array.from(content as ArrayLike<number>);
+  return new TextDecoder('utf-8').decode(u8);
+}
+
+/**
+ * Map sheet name → worksheet XML path via the workbook's `<sheet r:id>`
+ * entries and the workbook rels' Target attributes. Shared by parseXlsx and
+ * the post-write injectors (images / freeze panes).
+ */
+function sheetXmlPathsFromWorkbook(wbXml: string, wbRelsXml: string): Record<string, string> {
+  const wbRels: Record<string, string> = {};
+  for (const m of wbRelsXml.matchAll(/<Relationship\s+([^/>]*)\/>/g)) {
+    const attrs = m[1];
+    const id = /Id\s*=\s*"([^"]*)"/.exec(attrs)?.[1];
+    const target = /Target\s*=\s*"([^"]*)"/.exec(attrs)?.[1];
+    if (id && target) wbRels[id] = target;
+  }
+  const out: Record<string, string> = {};
+  for (const m of wbXml.matchAll(/<sheet\s+([^/>]*)\/?>/g)) {
+    const attrs = m[1];
+    const name = /name\s*=\s*"([^"]*)"/.exec(attrs)?.[1];
+    const rid = /r:id\s*=\s*"([^"]*)"/.exec(attrs)?.[1];
+    if (name && rid && wbRels[rid]) {
+      out[unescapeXml(name)] = `xl/${wbRels[rid]}`;
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse `xl/styles.xml` into a per-cellXf array of font/alignment styles.
+ * Entry n corresponds to a cell's `s="n"` xf index; `undefined` = nothing
+ * beyond the workbook default. Font name / size equal to the default font
+ * (fonts[0]) are treated as "inherit" so unstyled cells stay clean.
+ */
+function parseStylesXml(xml: string | null): Array<XfStyle | undefined> {
+  if (!xml) return [];
+  interface FontRec {
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+    sz?: number;
+    name?: string;
+    rgb?: string;
+  }
+  const fonts: FontRec[] = [];
+  const fontsBlock = /<fonts\b[^>]*>([\s\S]*?)<\/fonts>/.exec(xml)?.[1] ?? '';
+  for (const fm of fontsBlock.matchAll(/<font\b[^>]*\/>|<font\b[^>]*>([\s\S]*?)<\/font>/g)) {
+    const body = fm[1] ?? '';
+    const f: FontRec = {};
+    // Presence toggles `<b/>` / `<i/>` / `<u/>`; an explicit val="0"/"false"
+    // (or u val="none") negates.
+    if (/<b\b(?![^>]*val="(?:0|false)")[^>]*\/?>/.test(body)) f.bold = true;
+    if (/<i\b(?![^>]*val="(?:0|false)")[^>]*\/?>/.test(body)) f.italic = true;
+    if (/<u\b(?![^>]*val="(?:none|0|false)")[^>]*\/?>/.test(body)) f.underline = true;
+    const sz = /<sz\b[^>]*\bval="([\d.]+)"/.exec(body)?.[1];
+    if (sz) f.sz = Number(sz);
+    const name = /<name\b[^>]*\bval="([^"]*)"/.exec(body)?.[1];
+    if (name) f.name = unescapeXml(name);
+    // Only rgb-form colors round-trip (that's what our serializer writes);
+    // theme-indexed colors are left to inherit.
+    const rgb = /<color\b[^>]*\brgb="([0-9A-Fa-f]{6,8})"/.exec(body)?.[1];
+    if (rgb) f.rgb = rgb.toUpperCase();
+    fonts.push(f);
+  }
+  const defaultFont = fonts[0];
+  const out: Array<XfStyle | undefined> = [];
+  const xfsBlock = /<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/.exec(xml)?.[1] ?? '';
+  for (const xm of xfsBlock.matchAll(/<xf\b([^>]*?)(?:\/>|>([\s\S]*?)<\/xf>)/g)) {
+    const attrs = xm[1] ?? '';
+    const body = xm[2] ?? '';
+    const style: XfStyle = {};
+    const fontId = /\bfontId="(\d+)"/.exec(attrs)?.[1];
+    const font = fontId !== undefined ? fonts[Number(fontId)] : undefined;
+    if (font) {
+      if (font.bold) style.bold = true;
+      if (font.italic) style.italic = true;
+      if (font.underline) style.underline = true;
+      if (font.sz && font.sz !== defaultFont?.sz) style.fontSize = font.sz;
+      if (font.name && font.name !== defaultFont?.name) style.fontFamily = font.name;
+      if (font.rgb && font.rgb !== defaultFont?.rgb) style.fontColor = stripAlpha(font.rgb);
+    }
+    const horiz = /<alignment\b[^>]*\bhorizontal="(left|center|right)"/.exec(body)?.[1];
+    if (horiz) style.align = horiz as 'left' | 'center' | 'right';
+    out.push(Object.keys(style).length > 0 ? style : undefined);
+  }
+  return out;
+}
+
+/**
+ * Pull the per-cell xf indexes (`<c r="B2" s="3" …>`) and any frozen-pane
+ * split out of one worksheet's raw XML.
+ */
+function parseSheetXmlMeta(xml: string | null): SheetXmlMeta | null {
+  if (!xml) return null;
+  const xfByAddr = new Map<string, number>();
+  const dataBlock = /<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/.exec(xml)?.[1] ?? '';
+  for (const cm of dataBlock.matchAll(/<c\b([^>]*?)\/?>/g)) {
+    const attrs = cm[1];
+    const sIdx = /\bs="(\d+)"/.exec(attrs)?.[1];
+    if (sIdx === undefined) continue;
+    const addr = /\br="([A-Z]+\d+)"/.exec(attrs)?.[1];
+    if (!addr) continue;
+    xfByAddr.set(addr, Number(sIdx));
+  }
+  const meta: SheetXmlMeta = { xfByAddr };
+  const pane = /<pane\b([^>]*?)\/?>/.exec(xml)?.[1];
+  if (pane && /\bstate="frozen(?:Split)?"/.test(pane)) {
+    const x = Number(/\bxSplit="(\d+(?:\.\d+)?)"/.exec(pane)?.[1] ?? 0);
+    const y = Number(/\bySplit="(\d+(?:\.\d+)?)"/.exec(pane)?.[1] ?? 0);
+    if (x > 0) meta.freezeCols = Math.floor(x);
+    if (y > 0) meta.freezeRows = Math.floor(y);
+  }
+  return meta;
+}
+
+function readSheet(
+  name: string,
+  ws: XLSX.WorkSheet | undefined,
+  xfStyles: Array<XfStyle | undefined> = [],
+  meta: SheetXmlMeta | null = null,
+): XlsxSheet {
   // Hidden / very-hidden sheets may show up in `SheetNames` without a matching
   // entry in `Sheets`. Render them as empty rather than crashing — the user
   // can still see the tab and edit if they want.
@@ -430,8 +663,14 @@ function readSheet(name: string, ws: XLSX.WorkSheet | undefined): XlsxSheet {
     for (let c = 0; c < colCount; c++) {
       const addr = XLSX.utils.encode_cell({ r, c });
       const cell = ws[addr] as XLSX.CellObject | undefined;
+      // Font / alignment recovered from styles.xml via the cell's xf index —
+      // the community read never surfaces these on `cell.s` (fill only).
+      const xfIdx = meta?.xfByAddr.get(addr);
+      const xfStyle = xfIdx !== undefined ? xfStyles[xfIdx] : undefined;
       if (!cell) {
-        row.push({ text: '' });
+        // Value-less cells don't surface as cell objects, but a styled blank
+        // (e.g. a coloured header gap) still carries its xf in the sheet XML.
+        row.push(xfStyle ? { text: '', style: { ...xfStyle } } : { text: '' });
       } else {
         const rawType =
           cell.t === 'n' || cell.t === 's' || cell.t === 'b' || cell.t === 'd' || cell.t === 'e'
@@ -445,7 +684,7 @@ function readSheet(name: string, ws: XLSX.WorkSheet | undefined): XlsxSheet {
         row.push({
           text: formatCellDisplay(cell),
           rawType,
-          style: extractCellStyle(cell),
+          style: extractCellStyle(cell, xfStyle),
           ...(formula ? { formula } : {}),
         });
       }
@@ -460,7 +699,46 @@ function readSheet(name: string, ws: XLSX.WorkSheet | undefined): XlsxSheet {
     Array.isArray(wsMerges) && wsMerges.length > 0
       ? wsMerges.map((m) => ({ r1: m.s.r, c1: m.s.c, r2: m.e.r, c2: m.e.c }))
       : undefined;
-  return { name, cells, rowCount, colCount, merges };
+  // Column widths / row heights. With cellStyles SheetJS populates `wpx`
+  // (via process_col) and `hpx`; fall back to the wch ≈ px conversion when
+  // only character widths are present.
+  const wsCols = (ws as { '!cols'?: Array<{ wpx?: number; wch?: number; width?: number } | undefined> })['!cols'];
+  let colWidths: (number | undefined)[] | undefined;
+  if (Array.isArray(wsCols) && wsCols.some((col) => col && (col.wpx != null || col.wch != null || col.width != null))) {
+    colWidths = [];
+    for (let c = 0; c < colCount; c++) {
+      const col = wsCols[c];
+      colWidths[c] =
+        col?.wpx != null
+          ? Math.round(col.wpx)
+          : col?.wch != null
+            ? Math.round(col.wch * 7 + 5)
+            : col?.width != null
+              ? Math.round(col.width * 7 + 5)
+              : undefined;
+    }
+  }
+  const wsRows = (ws as { '!rows'?: Array<{ hpx?: number; hpt?: number } | undefined> })['!rows'];
+  let rowHeights: (number | undefined)[] | undefined;
+  if (Array.isArray(wsRows) && wsRows.some((rw) => rw && (rw.hpx != null || rw.hpt != null))) {
+    rowHeights = [];
+    for (let r = 0; r < rowCount; r++) {
+      const rw = wsRows[r];
+      rowHeights[r] =
+        rw?.hpx != null ? Math.round(rw.hpx) : rw?.hpt != null ? Math.round((rw.hpt * 96) / 72) : undefined;
+    }
+  }
+  return {
+    name,
+    cells,
+    rowCount,
+    colCount,
+    merges,
+    ...(colWidths ? { colWidths } : {}),
+    ...(rowHeights ? { rowHeights } : {}),
+    ...(meta?.freezeRows ? { freezeRows: meta.freezeRows } : {}),
+    ...(meta?.freezeCols ? { freezeCols: meta.freezeCols } : {}),
+  };
 }
 
 function formatCellDisplay(cell: XLSX.CellObject): string {
@@ -470,32 +748,44 @@ function formatCellDisplay(cell: XLSX.CellObject): string {
   return String(cell.v);
 }
 
-/** Pull whatever subset SheetJS surfaces in cell.s into our schema. */
-function extractCellStyle(cell: XLSX.CellObject): XlsxCellStyle | undefined {
+/**
+ * Pull whatever subset SheetJS surfaces in cell.s into our schema, merged
+ * over the font/alignment style recovered from styles.xml (`xfStyle`). The
+ * community read only puts the *fill* object on `cell.s`; font / alignment
+ * probes below are kept for robustness (some build variants do surface
+ * them) but the load-bearing source is `xfStyle`. Number formats arrive via
+ * `cell.z` (cellNF read option).
+ */
+function extractCellStyle(cell: XLSX.CellObject, xfStyle?: XfStyle): XlsxCellStyle | undefined {
+  const out: XlsxCellStyle = { ...(xfStyle ?? {}) };
   const s = (cell as { s?: Record<string, unknown> }).s;
-  if (!s || typeof s !== 'object') return undefined;
-  const out: XlsxCellStyle = {};
-  const font = s.font as { bold?: boolean; italic?: boolean; underline?: boolean; sz?: number; name?: string; color?: { rgb?: string } } | undefined;
-  if (font) {
-    if (font.bold) out.bold = true;
-    if (font.italic) out.italic = true;
-    if (font.underline) out.underline = true;
-    if (typeof font.sz === 'number') out.fontSize = font.sz;
-    if (typeof font.name === 'string' && font.name) out.fontFamily = font.name;
-    if (font.color?.rgb) out.fontColor = stripAlpha(font.color.rgb);
+  if (s && typeof s === 'object') {
+    const font = s.font as { bold?: boolean; italic?: boolean; underline?: boolean; sz?: number; name?: string; color?: { rgb?: string } } | undefined;
+    if (font) {
+      if (font.bold) out.bold = true;
+      if (font.italic) out.italic = true;
+      if (font.underline) out.underline = true;
+      if (typeof font.sz === 'number') out.fontSize = font.sz;
+      if (typeof font.name === 'string' && font.name) out.fontFamily = font.name;
+      if (font.color?.rgb) out.fontColor = stripAlpha(font.color.rgb);
+    }
+    const alignment = s.alignment as { horizontal?: string } | undefined;
+    if (alignment?.horizontal === 'left' || alignment?.horizontal === 'center' || alignment?.horizontal === 'right') {
+      out.align = alignment.horizontal;
+    }
+    // SheetJS may store bg under `fgColor` (foreground of the patternFill).
+    const fill = s.fgColor as { rgb?: string } | undefined;
+    if (fill?.rgb) out.bgColor = stripAlpha(fill.rgb);
+    // Some files put it under `patternFill.fgColor`.
+    const pattern = (s as { patternFill?: { fgColor?: { rgb?: string } } }).patternFill;
+    if (!out.bgColor && pattern?.fgColor?.rgb) out.bgColor = stripAlpha(pattern.fgColor.rgb);
+    const numFmt = (s as { numFmt?: string | number }).numFmt;
+    if (typeof numFmt === 'string' && numFmt && numFmt !== 'General') out.numberFormat = numFmt;
   }
-  const alignment = s.alignment as { horizontal?: string } | undefined;
-  if (alignment?.horizontal === 'left' || alignment?.horizontal === 'center' || alignment?.horizontal === 'right') {
-    out.align = alignment.horizontal;
+  if (!out.numberFormat) {
+    const z = (cell as { z?: unknown }).z;
+    if (typeof z === 'string' && z && z !== 'General') out.numberFormat = z;
   }
-  // SheetJS may store bg under `fgColor` (foreground of the patternFill).
-  const fill = s.fgColor as { rgb?: string } | undefined;
-  if (fill?.rgb) out.bgColor = stripAlpha(fill.rgb);
-  // Some files put it under `patternFill.fgColor`.
-  const pattern = (s as { patternFill?: { fgColor?: { rgb?: string } } }).patternFill;
-  if (!out.bgColor && pattern?.fgColor?.rgb) out.bgColor = stripAlpha(pattern.fgColor.rgb);
-  const numFmt = (s as { numFmt?: string | number }).numFmt;
-  if (typeof numFmt === 'string' && numFmt && numFmt !== 'General') out.numberFormat = numFmt;
   return Object.keys(out).length === 0 ? undefined : out;
 }
 
@@ -584,6 +874,27 @@ function writeSheetInto(ws: XLSX.WorkSheet, sheet: XlsxSheet): void {
       sheet.merges.map((m) => ({ s: { r: m.r1, c: m.c1 }, e: { r: m.r2, c: m.c2 } }));
   } else {
     delete (ws as { '!merges'?: unknown })['!merges'];
+  }
+  applyDimsToSheet(ws, sheet);
+}
+
+/**
+ * Persist column widths / row heights in SheetJS shape (`!cols` → wpx,
+ * `!rows` → hpx). Always overwrites so a cleared customization actually
+ * clears on save instead of resurrecting from the template bytes.
+ */
+function applyDimsToSheet(ws: XLSX.WorkSheet, sheet: XlsxSheet): void {
+  const cols = (sheet.colWidths ?? []).map((w) => (w != null ? { wpx: Math.round(w) } : undefined));
+  if (cols.some(Boolean)) {
+    (ws as { '!cols'?: Array<{ wpx: number } | undefined> })['!cols'] = cols;
+  } else {
+    delete (ws as { '!cols'?: unknown })['!cols'];
+  }
+  const rows = (sheet.rowHeights ?? []).map((h) => (h != null ? { hpx: Math.round(h) } : undefined));
+  if (rows.some(Boolean)) {
+    (ws as { '!rows'?: Array<{ hpx: number } | undefined> })['!rows'] = rows;
+  } else {
+    delete (ws as { '!rows'?: unknown })['!rows'];
   }
 }
 
@@ -677,6 +988,32 @@ function shiftMergesCol(
   return out.length > 0 ? out : undefined;
 }
 
+/** Insert `val` at `idx` in an optional sparse sizes array (immutably). */
+function spliceSizeIn(
+  arr: (number | undefined)[] | undefined,
+  idx: number,
+  val: number | undefined,
+): (number | undefined)[] | undefined {
+  if (!arr) return arr;
+  // Inserting past the end of the tracked range is a no-op — missing
+  // entries already mean "default size".
+  if (idx >= arr.length) return arr;
+  const next = [...arr];
+  next.splice(Math.max(0, idx), 0, val);
+  return next;
+}
+
+/** Remove index `idx` from an optional sparse sizes array (immutably). */
+function spliceSizeOut(
+  arr: (number | undefined)[] | undefined,
+  idx: number,
+): (number | undefined)[] | undefined {
+  if (!arr) return arr;
+  if (idx < 0 || idx >= arr.length) return arr;
+  const next = arr.filter((_, i) => i !== idx);
+  return next.some((v) => v !== undefined) ? next : undefined;
+}
+
 /** Insert a blank row at index `r` (existing rows shift down). */
 export function insertRowAt(sheet: XlsxSheet, r: number): XlsxSheet {
   const cells = [...sheet.cells];
@@ -690,7 +1027,13 @@ export function insertRowAt(sheet: XlsxSheet, r: number): XlsxSheet {
     if (r <= m.r2) return { r1: m.r1, r2: m.r2 + 1 };
     return { r1: m.r1, r2: m.r2 };
   });
-  return { ...sheet, cells, rowCount: cells.length, merges };
+  return {
+    ...sheet,
+    cells,
+    rowCount: cells.length,
+    merges,
+    rowHeights: spliceSizeIn(sheet.rowHeights, r, undefined),
+  };
 }
 
 /** Remove the row at index `r`. Refuses to drop below 1 row. */
@@ -706,7 +1049,13 @@ export function deleteRowAt(sheet: XlsxSheet, r: number): XlsxSheet {
     if (m.r1 === m.r2) return null;
     return { r1: m.r1, r2: m.r2 - 1 };
   });
-  return { ...sheet, cells, rowCount: cells.length, merges };
+  return {
+    ...sheet,
+    cells,
+    rowCount: cells.length,
+    merges,
+    rowHeights: spliceSizeOut(sheet.rowHeights, r),
+  };
 }
 
 /** Insert a blank column at index `c` (existing cols shift right). */
@@ -721,7 +1070,13 @@ export function insertColAt(sheet: XlsxSheet, c: number): XlsxSheet {
     if (c <= m.c2) return { c1: m.c1, c2: m.c2 + 1 };
     return { c1: m.c1, c2: m.c2 };
   });
-  return { ...sheet, cells, colCount: cells[0]?.length ?? sheet.colCount + 1, merges };
+  return {
+    ...sheet,
+    cells,
+    colCount: cells[0]?.length ?? sheet.colCount + 1,
+    merges,
+    colWidths: spliceSizeIn(sheet.colWidths, c, undefined),
+  };
 }
 
 /** Remove the column at index `c`. Refuses to drop below 1 col. */
@@ -739,6 +1094,7 @@ export function deleteColAt(sheet: XlsxSheet, c: number): XlsxSheet {
     cells,
     colCount: cells[0]?.length ?? Math.max(1, sheet.colCount - 1),
     merges,
+    colWidths: spliceSizeOut(sheet.colWidths, c),
   };
 }
 
@@ -885,6 +1241,8 @@ export function duplicateSheet(model: XlsxModel, idx: number): { model: XlsxMode
     name: copyName,
     cells: src.cells.map((row) => row.map((c) => ({ ...c, style: c.style ? { ...c.style } : undefined }))),
     merges: src.merges ? src.merges.map((m) => ({ ...m })) : undefined,
+    colWidths: src.colWidths ? [...src.colWidths] : undefined,
+    rowHeights: src.rowHeights ? [...src.rowHeights] : undefined,
     // Image bytes are immutable from the model's POV; we copy the array but
     // share the underlying Uint8Array so duplication stays cheap.
     images: src.images ? src.images.map((img) => ({ ...img })) : undefined,

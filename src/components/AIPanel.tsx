@@ -115,7 +115,18 @@ useWorkspace.subscribe((s, prev) => {
 
 export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Props): JSX.Element {
   const ai = useAI();
-  const ws = useWorkspace();
+  // R411 — narrow workspace selectors instead of a whole-store subscription.
+  // The panel reads exactly five fields; subscribing to the full store made
+  // every workspace mutation (per-keystroke content flushes, dirty/save-state
+  // flips, tab drags) re-render this entire ~2k-line component even while
+  // the AI side was idle. `ai` stays whole-store on purpose: the panel
+  // renders most of the AI state, so any narrowing there would be churn
+  // without saved renders.
+  const wsSelection = useWorkspace((s) => s.selection);
+  const wsActiveTabId = useWorkspace((s) => s.activeTabId);
+  const wsSessionEpoch = useWorkspace((s) => s.sessionEpoch);
+  const wsWorkspaceId = useWorkspace((s) => s.workspaceId);
+  const wsSetSelection = useWorkspace((s) => s.setSelection);
   // R405 — bilingual translator wired through the component so every
   // string in the AI panel flips on locale toggle.
   const t = useT();
@@ -152,7 +163,7 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
   // returning to A still shows the original selection — the editor itself
   // hasn't lost it.
   const activeSelection =
-    ws.selection && ws.selection.tabId === ws.activeTabId ? ws.selection : null;
+    wsSelection && wsSelection.tabId === wsActiveTabId ? wsSelection : null;
 
   // Listen for the global "focus AI" command from menu.ts.
   useEffect(() => {
@@ -191,15 +202,15 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
   //     NOT a workspace switch and the in-progress draft must persist.
   //     See module-level subscriber doc-block above for the full Save-As
   //     vs swap distinction.
-  const prevSessionEpochRef = useRef(ws.sessionEpoch);
+  const prevSessionEpochRef = useRef(wsSessionEpoch);
   useEffect(() => {
     const prev = prevSessionEpochRef.current;
-    prevSessionEpochRef.current = ws.sessionEpoch;
-    if (prev === null || prev === ws.sessionEpoch) return;
+    prevSessionEpochRef.current = wsSessionEpoch;
+    if (prev === null || prev === wsSessionEpoch) return;
     draftMemory = '';
     chatScrollMemory = null;
     setDraft('');
-  }, [ws.sessionEpoch]);
+  }, [wsSessionEpoch]);
 
   // Auto-scroll to bottom on new content — but only if the user is already
   // pinned near the bottom. If they've scrolled up to re-read mid-stream, we
@@ -460,7 +471,7 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
     // continueAfterToolResult itself has R179's workspace guard, but the
     // toolbar-flip lines between them don't — fix here.
     const applyWorkspaceId = useWorkspace.getState().workspaceId;
-    // R189 — bail if the React closure `ws` is from a workspace that's
+    // R189 — bail if the React closure `wsWorkspaceId` is from a workspace that's
     // already been swapped before the click handler ran (swap → click
     // before React commit). Without this, the rest of onApply executes
     // in a tangled state: `applyChangeset(NEW.tabs, OLD.changeset)` is a
@@ -474,7 +485,7 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
     // OLD, but they swapped before the handler ran. Silently no-op is
     // the cleanest semantics: their stale click on a no-longer-visible
     // pending shouldn't push DB rows or flip UI state in NEW.
-    if (ws.workspaceId !== applyWorkspaceId) return;
+    if (wsWorkspaceId !== applyWorkspaceId) return;
     // R186 — read tabs live (not from closure `ws.tabs`). Rapid Apply on
     // two PendingChange (P1 → P2) without an intervening React re-render
     // both reach this line with the SAME closure `ws.tabs` (the snapshot
@@ -694,7 +705,14 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
     // that text *is* their modify request, leave it alone.
     const hasDraft = draft.trim().length > 0;
     if (!hasDraft) {
-      setDraft(`修改建議：${p.summary}\n\n（請描述要怎麼調整）`);
+      // R408 — bilingual seed template. Called from a callback so tImp
+      // (locale-on-call) is appropriate; the user immediately starts
+      // editing the seeded text so locale-snap-at-click is the natural
+      // moment to lock in the language.
+      setDraft(tImp(
+        `修改建議：${p.summary}\n\n（請描述要怎麼調整）`,
+        `Modification request: ${p.summary}\n\n(Describe how you'd like it adjusted)`,
+      ));
     }
     ai.removePending(p.id);
     // Anthropic's API requires every `tool_use` block to be followed by a
@@ -860,7 +878,13 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
           ? activeSelection.preview
           : fullText.length <= TOOLTIP_CAP
             ? fullText
-            : `${fullText.slice(0, TOOLTIP_CAP)}…\n\n（已截斷，全部 ${fullText.length.toLocaleString()} 字元）`;
+            // R408 — bilingual truncation suffix. Body text is the user's own
+            // selected content (uneditable here, no need to translate); only
+            // the parenthetical disclosure is chrome that needs localizing.
+            : `${fullText.slice(0, TOOLTIP_CAP)}…\n\n${t(
+                `（已截斷，全部 ${fullText.length.toLocaleString()} 字元）`,
+                `(Truncated; full length ${fullText.length.toLocaleString()} chars)`,
+              )}`;
         return (
           <div className="px-3 py-1.5 border-b bg-accent/40 text-xs flex items-center gap-2">
             {/* R104 — translation-oversight cleanup. "Context:" was the lone
@@ -907,11 +931,14 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
                 className="opacity-60 shrink-0 tabular-nums"
                 title={t('選取片段字元數（送給模型的完整內容）', 'Selected text character count (full content sent to the model)')}
               >
-                {charCount.toLocaleString()} 字
+                {/* R408 — `字` suffix bilingual. The title at line above
+                    already routes through t(); the visible number suffix
+                    was the lone leak in the row. */}
+                {charCount.toLocaleString()} {t('字', 'chars')}
               </span>
             )}
             <button
-              onClick={() => ws.setSelection(null)}
+              onClick={() => wsSetSelection(null)}
               title={t('清除選取上下文', 'Clear selection context')}
               className="opacity-50 hover:opacity-100 hover:bg-secondary rounded p-0.5 transition-colors shrink-0"
             >
@@ -1048,7 +1075,9 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
                   className="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded border border-destructive/40 bg-background hover:bg-destructive/10"
                 >
                   <RefreshCw className="h-3 w-3" />
-                  重試
+                  {/* R408 — visible label was hardcoded Chinese; the retry
+                      failure toast on click already routes through tImp. */}
+                  {t('重試', 'Retry')}
                 </button>
               )}
             </div>
@@ -1087,7 +1116,12 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
           <button
             type="button"
             onClick={scrollToLatest}
-            title={ai.streaming.requestId !== null ? 'AI 仍在回應，點擊跳到最新內容' : '跳到最新訊息'}
+            // R408 — bilingual tooltip + visible label. Visible 「跳到
+            // 最新」 was hardcoded Chinese; tooltip flipped between two
+            // hardcoded strings depending on streaming state.
+            title={ai.streaming.requestId !== null
+              ? t('AI 仍在回應，點擊跳到最新內容', 'AI is still responding — click to jump to the latest content')
+              : t('跳到最新訊息', 'Jump to the latest message')}
             className={cn(
               'absolute bottom-3 right-3 z-10 h-7 px-2.5 rounded-full shadow-md border text-xs inline-flex items-center gap-1 transition-colors',
               ai.streaming.requestId !== null
@@ -1096,7 +1130,7 @@ export function AIPanel({ width, onWidthChange, hasApiKey, onOpenSettings }: Pro
             )}
           >
             <ChevronDown className="h-3.5 w-3.5" />
-            跳到最新
+            {t('跳到最新', 'Jump to latest')}
           </button>
         )}
       </div>
@@ -1291,7 +1325,11 @@ function Header({ hasApiKey, onOpenSettings }: { hasApiKey: boolean; onOpenSetti
         </button>
         {!hasApiKey && (
           <Button size="sm" variant="outline" onClick={onOpenSettings}>
-            設定 API key
+            {/* R408 — visible CTA when no key is configured. Was hardcoded
+                Chinese while the parallel `先去設定 Anthropic API key`
+                button below the empty-state (line ~1653) already used
+                t(). Same gate, two surfaces, one voice. */}
+            {t('設定 API key', 'Set API key')}
           </Button>
         )}
       </div>
@@ -1328,6 +1366,12 @@ function MessageBubble({
   const isUser = message.role === 'user';
   const isTool = message.role === 'tool_result';
   const [copied, setCopied] = useState(false);
+  // R408 — bilingual. The hover-revealed copy button's title and the
+  // pre-first-chunk「思考中…」placeholder were both hardcoded; this is the
+  // most-rendered component in the panel (one per message), so leaks here
+  // are loudest. aria-label below already used tImp; subscribe via useT so
+  // the title and placeholder flip together with locale.
+  const t = useT();
   // Only expose a copy affordance once a stable text payload exists. During
   // streaming the partial text is unstable (mid-sentence, model may revise);
   // tool_result rows are decorative traces, not messages; pure tool_use
@@ -1407,8 +1451,8 @@ function MessageBubble({
           <button
             type="button"
             onClick={handleCopy}
-            title={copied ? '已複製' : '複製訊息文字'}
-            aria-label={tImp('複製訊息', 'Copy message')}
+            title={copied ? t('已複製', 'Copied') : t('複製訊息文字', 'Copy message text')}
+            aria-label={t('複製訊息', 'Copy message')}
             className={cn(
               'absolute top-1 h-5 w-5 rounded-md flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity',
               isUser
@@ -1431,7 +1475,7 @@ function MessageBubble({
               <span className="h-1 w-1 rounded-full bg-muted-foreground/70 animate-bounce [animation-delay:-0.15s]" />
               <span className="h-1 w-1 rounded-full bg-muted-foreground/70 animate-bounce" />
             </span>
-            思考中…
+            {t('思考中…', 'Thinking…')}
           </span>
         )}
         {streaming && (message.content.length > 0 || inProgressToolUse) && (

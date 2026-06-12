@@ -71,8 +71,8 @@ export const RichBlock = forwardRef<RichBlockHandle, Props>(function RichBlock(
   const lastWrittenKey = useRef<string>('');
 
   const runsKey = useCallback((rs: DocxRun[]): string => {
-    // Bold/italic/underline collapse to a 3-bit prefix; text follows. Cheap
-    // and deterministic.
+    // Bold/italic/underline/strikethrough collapse to a 4-bit prefix; text
+    // follows. Cheap and deterministic.
     let out = '';
     for (const r of rs) {
       const s = r.style;
@@ -80,6 +80,7 @@ export const RichBlock = forwardRef<RichBlockHandle, Props>(function RichBlock(
         (s?.bold ? 'B' : '_') +
         (s?.italic ? 'I' : '_') +
         (s?.underline ? 'U' : '_') +
+        (s?.strikethrough ? 'S' : '_') +
         '|' +
         r.text +
         '\u0001';

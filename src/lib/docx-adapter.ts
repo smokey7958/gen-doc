@@ -24,6 +24,7 @@ import {
   HeadingLevel,
   ImageRun,
   LevelFormat,
+  LineRuleType,
   Packer,
   Paragraph,
   Table,
@@ -72,16 +73,30 @@ export type DocxBlockKind =
 
 export type DocxAlign = 'left' | 'center' | 'right' | 'justify';
 
+/** docx named highlight colors the editor's palette offers (subset of OOXML's w:highlight). */
+export type DocxHighlightColor =
+  | 'yellow'
+  | 'green'
+  | 'cyan'
+  | 'magenta'
+  | 'red'
+  | 'darkYellow';
+
 export interface DocxBlockStyle {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  strikethrough?: boolean;
   /** Font size in half-points × 2 — i.e. 24 = 12pt. We accept points; convert on write. */
   fontSize?: number;
   /** Hex without leading '#', e.g. "FF0000". */
   color?: string;
   /** Font family name, e.g. "Calibri" or "Microsoft JhengHei". */
   fontFamily?: string;
+  /** Named highlight applied to every run of the block. */
+  highlight?: DocxHighlightColor;
+  /** Line-spacing multiplier (1 = single, 1.5, 2 …). Serialized as 240ths. */
+  lineSpacing?: number;
 }
 
 /**
@@ -93,6 +108,7 @@ export interface DocxRunStyle {
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
+  strikethrough?: boolean;
 }
 
 /**
@@ -155,6 +171,8 @@ export interface DocxBlock {
   runs?: DocxRun[];
   /** Populated only when kind === 'image'. */
   image?: DocxImage;
+  /** Emit a page break before this block on serialize. */
+  pageBreakBefore?: boolean;
 }
 
 /**
@@ -443,6 +461,12 @@ function makeBlockFromElement(kind: DocxBlockKind, el: Element): DocxBlock {
   if (allTextWrappedIn(el, ['strong', 'b'])) style.bold = true;
   if (allTextWrappedIn(el, ['em', 'i'])) style.italic = true;
   if (allTextWrappedIn(el, ['u'])) style.underline = true;
+  if (allTextWrappedIn(el, ['s', 'del', 'strike'])) style.strikethrough = true;
+  // Best-effort highlight recovery: mammoth doesn't surface w:highlight by
+  // default, but if any span carries a background-color matching one of the
+  // six palette colors, lift it to block level.
+  const hl = sniffHighlight(el);
+  if (hl) style.highlight = hl;
   // Hyperlink: lift the first descendant <a href> to a block-level link.
   // We only set it if the entire block's text sits inside that anchor —
   // otherwise the model can't represent a partial-line link without
@@ -496,6 +520,7 @@ function extractRuns(el: Element): DocxRun[] {
         if (tag === 'STRONG' || tag === 'B') style.bold = true;
         if (tag === 'EM' || tag === 'I') style.italic = true;
         if (tag === 'U') style.underline = true;
+        if (tag === 'S' || tag === 'DEL' || tag === 'STRIKE') style.strikethrough = true;
         p = p.parentElement;
       }
       const finalStyle = Object.keys(style).length > 0 ? style : undefined;
@@ -514,7 +539,38 @@ function extractRuns(el: Element): DocxRun[] {
 function runStylesEqual(a: DocxRunStyle | undefined, b: DocxRunStyle | undefined): boolean {
   if (!a && !b) return true;
   if (!a || !b) return false;
-  return !!a.bold === !!b.bold && !!a.italic === !!b.italic && !!a.underline === !!b.underline;
+  return (
+    !!a.bold === !!b.bold &&
+    !!a.italic === !!b.italic &&
+    !!a.underline === !!b.underline &&
+    !!a.strikethrough === !!b.strikethrough
+  );
+}
+
+/**
+ * Map an inline `background-color` (on the element or any descendant) to one
+ * of the six named docx highlight colors. Browsers normalize inline styles
+ * to `rgb(...)`, so we match both hex and rgb forms plus CSS keywords.
+ */
+const HIGHLIGHT_BG_MAP: Record<string, DocxHighlightColor> = {
+  '#ffff00': 'yellow', 'rgb(255,255,0)': 'yellow', yellow: 'yellow',
+  '#00ff00': 'green', 'rgb(0,255,0)': 'green', lime: 'green',
+  '#00ffff': 'cyan', 'rgb(0,255,255)': 'cyan', cyan: 'cyan', aqua: 'cyan',
+  '#ff00ff': 'magenta', 'rgb(255,0,255)': 'magenta', magenta: 'magenta', fuchsia: 'magenta',
+  '#ff0000': 'red', 'rgb(255,0,0)': 'red', red: 'red',
+  '#808000': 'darkYellow', 'rgb(128,128,0)': 'darkYellow', olive: 'darkYellow',
+};
+
+function sniffHighlight(el: Element): DocxHighlightColor | undefined {
+  const candidates = [el, ...Array.from(el.querySelectorAll('[style]'))];
+  for (const c of candidates) {
+    const bg = (c as HTMLElement).style?.backgroundColor ?? '';
+    if (!bg) continue;
+    const key = bg.toLowerCase().replace(/\s+/g, '');
+    const named = HIGHLIGHT_BG_MAP[key];
+    if (named) return named;
+  }
+  return undefined;
 }
 
 /** True if every text node descendant is inside one of `tags`. */
@@ -563,6 +619,7 @@ function buildParagraph(b: DocxBlock): Paragraph {
     ...(isLink ? { color: '0563C1' } : {}),
     ...(s?.fontSize ? { size: s.fontSize * 2 } : {}), // pt → half-pt
     ...(s?.fontFamily ? { font: s.fontFamily } : {}),
+    ...(s?.highlight ? { highlight: s.highlight } : {}),
   };
   // Build text runs. If runs[] is present we emit one TextRun per fragment,
   // each with its own B/I/U flags merged with the block defaults; the
@@ -577,6 +634,7 @@ function buildParagraph(b: DocxBlock): Paragraph {
           ...(rs.bold || s?.bold ? { bold: true } : {}),
           ...(rs.italic || s?.italic ? { italics: true } : {}),
           ...(rs.underline || s?.underline || isLink ? { underline: {} } : {}),
+          ...(rs.strikethrough || s?.strikethrough ? { strike: true } : {}),
         });
       })
     : [
@@ -586,6 +644,7 @@ function buildParagraph(b: DocxBlock): Paragraph {
           ...(s?.bold ? { bold: true } : {}),
           ...(s?.italic ? { italics: true } : {}),
           ...(s?.underline || isLink ? { underline: {} } : {}),
+          ...(s?.strikethrough ? { strike: true } : {}),
         }),
       ];
   const children: ParagraphChild[] = isLink
@@ -632,6 +691,16 @@ function buildParagraph(b: DocxBlock): Paragraph {
   }
   if (b.align) {
     opts = { ...opts, alignment: alignToDocx(b.align) };
+  }
+  if (s?.lineSpacing) {
+    // 240 = single spacing in 240ths of a line.
+    opts = {
+      ...opts,
+      spacing: { line: Math.round(240 * s.lineSpacing), lineRule: LineRuleType.AUTO },
+    };
+  }
+  if (b.pageBreakBefore) {
+    opts = { ...opts, pageBreakBefore: true };
   }
   return new Paragraph(opts);
 }

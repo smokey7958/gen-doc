@@ -18,7 +18,7 @@ import { notify } from '../store/toast';
 import { Check, Eye, EyeOff, Loader2, ShieldCheck } from 'lucide-react';
 import type { UserConfig } from '../types/ipc';
 import { SUPPORTED_MODELS, resolveSupportedModelId } from '../types/ai';
-import { useT } from '../lib/i18n';
+import { useT, tImp } from '../lib/i18n';
 
 interface Props {
   open: boolean;
@@ -133,7 +133,10 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
       } catch (err) {
         if (!alive) return;
         const msg = err instanceof Error ? err.message : String(err);
-        notify(`載入設定失敗：${msg}`, 'error');
+        // R407 — bilingual. The other four error toasts in this file
+        // (reportConfigError's three callers + NumberField clamp) all leak
+        // Chinese in English mode; this round closes them.
+        notify(tImp(`載入設定失敗：${msg}`, `Failed to load settings: ${msg}`), 'error');
         // Close the dialog so the user isn't stuck at the spinner. The
         // outer parent owns `open`; calling onOpenChange(false) routes
         // through the same close path Esc / ✕ uses.
@@ -151,9 +154,14 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
   // (because the post-await `setConfig(next)` never ran), so the user saw
   // their setting "snap back" with no explanation. Returning a boolean lets
   // each call site know whether to run its post-success state updates.
-  const reportConfigError = (action: string, err: unknown): void => {
+  // R407 — bilingual. Takes a (zh, en) action pair so the wrap reads
+  // "<action>失敗：…" / "Failed to <action>: …" in the user's locale.
+  // Originally took a single Chinese `action` string with hardcoded
+  // "失敗：" suffix — leaked Chinese in English mode at all three call
+  // sites (patch / saveKey / clearKey).
+  const reportConfigError = (actionZh: string, actionEn: string, err: unknown): void => {
     const msg = err instanceof Error ? err.message : String(err);
-    notify(`${action}失敗：${msg}`, 'error');
+    notify(tImp(`${actionZh}失敗：${msg}`, `Failed to ${actionEn}: ${msg}`), 'error');
   };
 
   const patch = async (p: Partial<UserConfig>) => {
@@ -167,7 +175,7 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
     try {
       next = await window.gendoc.config.set(p);
     } catch (err) {
-      reportConfigError('儲存設定', err);
+      reportConfigError('儲存設定', 'save settings', err);
       return;
     }
     setConfig(next);
@@ -185,7 +193,7 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
     try {
       await window.gendoc.config.setApiKey(keyDraft.trim());
     } catch (err) {
-      reportConfigError('儲存 API key', err);
+      reportConfigError('儲存 API key', 'save API key', err);
       return;
     }
     setKeyDraft('');
@@ -203,7 +211,7 @@ export function SettingsDialog({ open, onOpenChange, onApiKeyChange }: Props): J
     try {
       await window.gendoc.config.clearApiKey();
     } catch (err) {
-      reportConfigError('清除 API key', err);
+      reportConfigError('清除 API key', 'clear API key', err);
       return;
     }
     setHasKey(false);
@@ -750,8 +758,17 @@ function NumberField({
         // label ("Temperature (0 – 1)") so the toast doesn't double-print
         // the range — the parenthetical 「有效範圍 …」 already carries it.
         if (clamped !== v) {
+          // R407 — bilingual clamp toast. Mirrors GoToDialog's pattern (also
+          // bilingual via tImp). `label` is the field name in English already
+          // (passed as "Temperature" / "Max tokens" from the callers above);
+          // the surrounding sentence is the part that needs the language
+          // split. The `數值` / "value" fallback covers the legacy callsite
+          // (none after R41) that may not pass `label`.
           notify(
-            `${label ?? '數值'} 已調整為 ${clamped}（輸入 ${v} 超出有效範圍 ${min} – ${max}）`,
+            tImp(
+              `${label ?? '數值'} 已調整為 ${clamped}（輸入 ${v} 超出有效範圍 ${min} – ${max}）`,
+              `${label ?? 'Value'} adjusted to ${clamped} (input ${v} outside valid range ${min} – ${max})`,
+            ),
             'info',
           );
         }

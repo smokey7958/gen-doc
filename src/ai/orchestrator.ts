@@ -18,7 +18,11 @@ import type {
 import { useAI, type PendingChange } from '../store/ai';
 import { useWorkspace } from '../store/workspace';
 import { sendChatTurn, type InflightHandle } from './provider';
-import { dispatchTool } from './dispatcher';
+// R415 — dispatcher is loaded on demand (first tool call) instead of
+// statically: it pulls the whole OOXML adapter graph (docx, xlsx /
+// xlsx-js-style, jszip, mammoth) into its chunk, which would otherwise
+// sit in the renderer's startup bundle. Only types are imported eagerly.
+import type { DispatchResult } from './dispatcher';
 import { TOOLS } from './tools';
 import { SYSTEM_PROMPT } from './system-prompt';
 
@@ -831,8 +835,12 @@ async function handleAssistantToolCalls(msg: ChatMessage): Promise<void> {
     // (cleared on app reload). setError surfaces the failure via the
     // banner, same channel as R210 / R211 / R203 / R204 use.
     try {
-      let result: Awaited<ReturnType<typeof dispatchTool>>;
+      let result: DispatchResult;
       try {
+        // R415 — lazy import inside the R228 try: a (highly unlikely)
+        // chunk-load failure routes through the same dispatch_threw
+        // synthetic-tool-result path as a dispatcher exception.
+        const { dispatchTool } = await import('./dispatcher');
         result = await dispatchTool(block, { tabs: ws.tabs, activeTabId: ws.activeTabId });
       } catch (err) {
         // R262 — bail before pushing synth on dispatch-threw if user

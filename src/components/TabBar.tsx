@@ -147,9 +147,17 @@ export function TabBar(): JSX.Element {
           const cur = useWorkspace.getState().tabs.find((t) => t.id === tabId);
           if (
             cur?.dirty &&
-            !(await window.gendoc.app.confirm(
+            // R406 — bilingual confirm. Sibling close-confirms in App.tsx
+            // (handleNew / handleOpen / handleOpenRecent / drop-`.gd`, and
+            // the Ctrl+W path this round fixes) all already route through
+            // tImp; this per-tab × / middle-click / context-menu close
+            // path was the lone holdout. The cur.name interpolation is
+            // identical across both branches because file names don't
+            // localize.
+            !(await window.gendoc.app.confirm(tImp(
               `「${tabName}」尚未儲存，確定關閉？`,
-            ))
+              `"${tabName}" has unsaved changes. Close anyway?`,
+            )))
           )
             return;
           void closeTabWithFlush(tabId);
@@ -217,7 +225,17 @@ export function TabBar(): JSX.Element {
     try {
       if (
         dirtyCount > 0 &&
-        !(await window.gendoc.app.confirm(`有 ${dirtyCount} 個頁籤尚未儲存，確定${action}？`))
+        // R406 — bilingual batch close-confirm. `action` is already
+        // locale-resolved (the three callsites pass `t('關閉其他', 'Close
+        // Others')` / `t('關閉右側', 'Close to the Right')` / `t('全部
+        // 關閉', 'Close All')`), so interpolating it into a CN-only
+        // sentence yielded "有 N 個頁籤尚未儲存，確定Close Others？" in
+        // English mode. Match `action`'s language with tImp on the
+        // surrounding sentence so both halves agree.
+        !(await window.gendoc.app.confirm(tImp(
+          `有 ${dirtyCount} 個頁籤尚未儲存，確定${action}？`,
+          `${dirtyCount} tab${dirtyCount === 1 ? '' : 's'} have unsaved changes. ${action} anyway?`,
+        )))
       ) {
         return;
       }

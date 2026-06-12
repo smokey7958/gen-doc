@@ -314,7 +314,16 @@ export function FileExplorer({ rootPath, onPickFolder, onCollapse }: Props): JSX
       setError(null);
     } catch (e) {
       if (myGen !== rootGenRef.current) return;
-      setError(`無法讀取 ${dirPath}：${(e as Error).message}`);
+      // R406 — bilingual error banner. Frozen-at-throw-time copy is fine
+      // here (the banner is dismissable and re-firing the IPC produces a
+      // fresh string in the user's current locale anyway), so tImp at the
+      // setError site is enough — wiring a render-time t() through
+      // setError would require restructuring the error state into
+      // {path, message} and is overkill for a transient banner.
+      setError(tImp(
+        `無法讀取 ${dirPath}：${(e as Error).message}`,
+        `Failed to read ${dirPath}: ${(e as Error).message}`,
+      ));
       setEntries((prev) => {
         const next = new Map(prev);
         next.delete(dirPath);
@@ -640,6 +649,11 @@ function FileRow({ entry, depth }: { entry: FsEntry; depth: number }): JSX.Eleme
   const openable = isOpenable(entry.name);
   const [opening, setOpening] = useState(false);
   const openFile = useOpenFile();
+  // R406 — FileRow's title was hardcoded Chinese; the parent FileExplorer
+  // sub-components (Header, EmptyState) already subscribe via useT().
+  // FileRow is a separately-mounted React component so it needs its own
+  // subscription for the row tooltip to flip on locale toggle.
+  const t = useT();
   // Surface tab state next to the file so the explorer feels connected to the
   // tab bar instead of just being a "list of paths". Clicking an already-open
   // file already short-circuits to the existing tab (see useOpenFile), but
@@ -656,9 +670,15 @@ function FileRow({ entry, depth }: { entry: FsEntry; depth: number }): JSX.Eleme
     const active = s.tabs.find((t) => t.id === s.activeTabId);
     return active?.sourcePath === entry.path;
   });
-  const isOpenInTab = useWorkspace(
-    (s) => !isActiveTab && s.tabs.some((t) => t.sourcePath === entry.path),
+  // R411 — keep the selector pure. The previous form closed over the
+  // component-local `isActiveTab` inside the selector, so a store update
+  // that flipped both values in one commit could evaluate against the
+  // stale closure for one render. Select only store state; derive the
+  // combined flag outside.
+  const isOpenAnywhere = useWorkspace((s) =>
+    s.tabs.some((t) => t.sourcePath === entry.path),
   );
+  const isOpenInTab = !isActiveTab && isOpenAnywhere;
   const handleClick = useCallback(async () => {
     if (!openable || opening) return;
     setOpening(true);
@@ -698,11 +718,11 @@ function FileRow({ entry, depth }: { entry: FsEntry; depth: number }): JSX.Eleme
       title={
         openable
           ? isActiveTab
-            ? `${entry.path}（目前頁籤）`
+            ? `${entry.path}${t('（目前頁籤）', ' (current tab)')}`
             : isOpenInTab
-              ? `${entry.path}（已在其他頁籤開啟）`
+              ? `${entry.path}${t('（已在其他頁籤開啟）', ' (open in another tab)')}`
               : entry.path
-          : `${entry.path}（不支援的檔案類型）`
+          : `${entry.path}${t('（不支援的檔案類型）', ' (unsupported file type)')}`
       }
     >
       {opening ? (
@@ -819,7 +839,14 @@ function useOpenFile(): (filePath: string) => Promise<void> {
         notify(tImp(`不支援的檔案類型：${content.name}`, `Unsupported file type: ${content.name}`), 'warning');
       }
     } catch (e) {
-      notify(`開啟失敗：${(e as Error).message}`, 'error');
+      // R406 — sibling-leak with the .gd branch above (line ~796) which
+      // already routes through tImp. This loose-file path was the lone
+      // outlier — same operation (open file → failure → toast), the only
+      // difference being which kind of file.
+      notify(tImp(
+        `開啟失敗：${(e as Error).message}`,
+        `Failed to open: ${(e as Error).message}`,
+      ), 'error');
     }
   }, []);
 }

@@ -62,6 +62,17 @@ export interface PptxTextRun {
   frame: PptxFrame;
   text: string;
   style?: PptxRunStyle;
+  /** Paragraph horizontal alignment from the enclosing `<a:pPr algn>`.
+   *  Para-level data carried per-run because the model is run-centric:
+   *  every run of the same paragraph holds the same value at parse time,
+   *  and the UI updates all paraIndex-siblings together so the write-back
+   *  stays unambiguous. Only l/ctr/r are modelled; 'just'/'dist' parse to
+   *  undefined and round-trip untouched (see applyParagraphAligns). */
+  align?: 'l' | 'ctr' | 'r';
+  /** Document-order index of the run's enclosing `<a:p>` within the slide
+   *  XML (counting only non-self-closing paragraphs). Lets the serializer
+   *  patch the right `<a:pPr>` without re-deriving paragraph membership. */
+  paraIndex?: number;
 }
 
 export interface PptxSlide {
@@ -85,6 +96,23 @@ export interface PptxSlide {
    * box. Absent shapes are not images. Generated lazily during parsePptx.
    */
   pictures?: Record<number, string>;
+  /**
+   * Map of shapeIndex → explicit solid-fill hex (6-digit, no '#') read from
+   * the FIRST `<a:solidFill><a:srgbClr>` that is a direct child of the
+   * shape's `<p:spPr>` (line fills and text-run fills excluded). Theme
+   * fills (`schemeClr`, style refs) are not captured and round-trip
+   * untouched. Writes go through `setShapeFill` (byte-level patch), not
+   * `serializePptx`.
+   */
+  shapeFills?: Record<number, string>;
+  /**
+   * Map of shapeIndex → explicit outline read from `<p:spPr>`'s `<a:ln>`
+   * when it carries an `<a:srgbClr>` solid fill. `widthPt` converts the
+   * EMU `w` attribute (12700 EMU = 1 pt; OOXML default ≈ 0.75 pt when
+   * absent). Theme outlines are not captured. Writes go through
+   * `setShapeLine`.
+   */
+  shapeLines?: Record<number, { color?: string; widthPt?: number }>;
 }
 
 export interface PptxModel {
@@ -145,6 +173,16 @@ export async function parsePptx(bytes: Uint8Array): Promise<PptxModel> {
     } catch {
       // swallow — slide opens without picture overlays
     }
+    // Shape fill / outline inventory — best-effort like pictures.
+    let shapeFills: Record<number, string> | undefined;
+    let shapeLines: Record<number, { color?: string; widthPt?: number }> | undefined;
+    try {
+      const styles = extractShapeStyles(xml);
+      if (Object.keys(styles.fills).length > 0) shapeFills = styles.fills;
+      if (Object.keys(styles.lines).length > 0) shapeLines = styles.lines;
+    } catch {
+      // swallow — slide opens without fill/outline overlays
+    }
     slides.push({
       index: i,
       zipPath: path,
@@ -152,6 +190,8 @@ export async function parsePptx(bytes: Uint8Array): Promise<PptxModel> {
       notesText,
       notesPath,
       pictures,
+      shapeFills,
+      shapeLines,
     });
   }
   return { empty: slides.length === 0, slides, slideSize };
@@ -292,7 +332,7 @@ export async function serializePptx(model: PptxModel, originalBytes: Uint8Array)
     const file = zip.file(slide.zipPath);
     if (!file) continue;
     const xml = await file.async('string');
-    const updated = applyRuns(xml, slide.runs);
+    const updated = applyParagraphAligns(applyRuns(xml, slide.runs), slide.runs);
     zip.file(slide.zipPath, updated);
     await writeSlideNotes(zip, slide);
   }
@@ -782,6 +822,252 @@ function numAttrOf(tag: string, name: string): string | null {
   return m ? m[1] : null;
 }
 
+// ── shape fill / outline / z-order ──────────────────────────────────────
+
+/** Locate the Nth `<p:sp>` block — same walker / index semantics as
+ *  extractRuns and moveShapeOnSlide so shapeIndex lines up across ops. */
+function findNthShapeBlock(
+  xml: string,
+  shapeIndex: number,
+): { start: number; end: number; block: string } | null {
+  const spRe = /<p:sp\b[\s\S]*?<\/p:sp>/g;
+  let i = 0;
+  for (let m = spRe.exec(xml); m !== null; m = spRe.exec(xml)) {
+    if (i === shapeIndex) return { start: m.index, end: m.index + m[0].length, block: m[0] };
+    i += 1;
+  }
+  return null;
+}
+
+/**
+ * Set (or clear) the solid fill of the Nth `<p:sp>` on a slide. Patches the
+ * first fill element that is a direct child of `<p:spPr>` (i.e. before any
+ * `<a:ln>` — OOXML orders fill before line), never the outline fill or text
+ * run fills. `hex` is a 6-digit RGB without '#'; `null` removes the explicit
+ * `<a:solidFill>` so the shape falls back to its inherited / theme default
+ * ("clear = restore default"). Conservative: a blipFill picture shape or an
+ * unmatched pattern returns the bytes UNCHANGED, never corrupted.
+ */
+export async function setShapeFill(
+  originalBytes: Uint8Array,
+  slideIndex: number,
+  shapeIndex: number,
+  hex: string | null,
+): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(originalBytes);
+  const order = await resolvePresentationOrder(zip);
+  if (slideIndex < 0 || slideIndex >= order.length) {
+    throw new Error(`slide_out_of_range: ${slideIndex}`);
+  }
+  const path = order[slideIndex].path;
+  const xml = await mustReadString(zip, path);
+  const target = findNthShapeBlock(xml, shapeIndex);
+  if (!target) throw new Error(`shape_out_of_range: slide ${slideIndex} shape ${shapeIndex}`);
+  const patched = patchShapeFillBlock(target.block, hex ? hex.toUpperCase() : null);
+  if (patched === target.block) return originalBytes; // soft no-op — leave bytes untouched
+  const updated = xml.slice(0, target.start) + patched + xml.slice(target.end);
+  zip.file(path, updated);
+  return await zip.generateAsync({ type: 'uint8array' });
+}
+
+function patchShapeFillBlock(spBlock: string, hex: string | null): string {
+  const spPrM = spBlock.match(/(<p:spPr\b[^>]*>)([\s\S]*?)<\/p:spPr>/);
+  if (!spPrM) {
+    // Self-closing <p:spPr/> — expand it when setting a colour.
+    if (hex && /<p:spPr\s*\/>/.test(spBlock)) {
+      return spBlock.replace(
+        /<p:spPr\s*\/>/,
+        `<p:spPr><a:solidFill><a:srgbClr val="${hex}"/></a:solidFill></p:spPr>`,
+      );
+    }
+    return spBlock;
+  }
+  const inner = spPrM[2];
+  // Fill scope = spPr content before <a:ln> (line fills live inside ln).
+  const lnIdx = inner.search(/<a:ln[\s/>]/);
+  const scope = lnIdx >= 0 ? inner.slice(0, lnIdx) : inner;
+  // Never touch picture shapes — replacing a blipFill would drop the image.
+  if (/<a:blipFill\b/.test(scope)) return spBlock;
+  const solid = scope.match(/<a:solidFill>[\s\S]*?<\/a:solidFill>/);
+  let newInner: string;
+  if (hex) {
+    const el = `<a:solidFill><a:srgbClr val="${hex}"/></a:solidFill>`;
+    if (solid) {
+      newInner = inner.slice(0, solid.index!) + el + inner.slice(solid.index! + solid[0].length);
+    } else {
+      // Replace an explicit no-fill / gradient / pattern, else insert fresh.
+      const other = scope.match(
+        /<a:noFill\s*\/>|<a:gradFill\b[\s\S]*?<\/a:gradFill>|<a:pattFill\b[\s\S]*?<\/a:pattFill>|<a:grpFill\s*\/>/,
+      );
+      if (other) {
+        newInner = inner.slice(0, other.index!) + el + inner.slice(other.index! + other[0].length);
+      } else {
+        // Insert before <a:ln> / <a:effectLst> to respect CT_ShapeProperties
+        // child order; append at the end when neither exists.
+        const effIdx = inner.search(/<a:effectLst[\s/>]/);
+        const at = lnIdx >= 0 ? lnIdx : effIdx >= 0 ? effIdx : inner.length;
+        newInner = inner.slice(0, at) + el + inner.slice(at);
+      }
+    }
+  } else {
+    if (!solid) return spBlock; // nothing explicit to clear
+    newInner = inner.slice(0, solid.index!) + inner.slice(solid.index! + solid[0].length);
+  }
+  const rebuilt = spPrM[1] + newInner + '</p:spPr>';
+  return (
+    spBlock.slice(0, spPrM.index!) + rebuilt + spBlock.slice(spPrM.index! + spPrM[0].length)
+  );
+}
+
+/**
+ * Set (or remove) the outline of the Nth `<p:sp>` on a slide. `line.widthPt`
+ * is in points (12700 EMU = 1 pt); `null` writes `<a:ln><a:noFill/></a:ln>`
+ * so "no outline" is explicit and deterministic even when the shape would
+ * otherwise inherit a themed line. The whole `<a:ln>` element is rewritten
+ * (same whole-element strategy as patchShapeXfrm / mergeRPr's solidFill);
+ * dash/cap styles on a pre-existing line are not preserved — documented
+ * trade-off for regex-safe patching. Unmatched patterns return the bytes
+ * unchanged.
+ */
+export async function setShapeLine(
+  originalBytes: Uint8Array,
+  slideIndex: number,
+  shapeIndex: number,
+  line: { color?: string; widthPt?: number } | null,
+): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(originalBytes);
+  const order = await resolvePresentationOrder(zip);
+  if (slideIndex < 0 || slideIndex >= order.length) {
+    throw new Error(`slide_out_of_range: ${slideIndex}`);
+  }
+  const path = order[slideIndex].path;
+  const xml = await mustReadString(zip, path);
+  const target = findNthShapeBlock(xml, shapeIndex);
+  if (!target) throw new Error(`shape_out_of_range: slide ${slideIndex} shape ${shapeIndex}`);
+  const patched = patchShapeLineBlock(target.block, line);
+  if (patched === target.block) return originalBytes;
+  const updated = xml.slice(0, target.start) + patched + xml.slice(target.end);
+  zip.file(path, updated);
+  return await zip.generateAsync({ type: 'uint8array' });
+}
+
+function patchShapeLineBlock(
+  spBlock: string,
+  line: { color?: string; widthPt?: number } | null,
+): string {
+  const el =
+    line === null
+      ? '<a:ln><a:noFill/></a:ln>'
+      : `<a:ln w="${Math.max(1, Math.round((line.widthPt ?? 1) * 12700))}">` +
+        `<a:solidFill><a:srgbClr val="${(line.color ?? '000000').toUpperCase()}"/></a:solidFill></a:ln>`;
+  const spPrM = spBlock.match(/(<p:spPr\b[^>]*>)([\s\S]*?)<\/p:spPr>/);
+  if (!spPrM) {
+    if (/<p:spPr\s*\/>/.test(spBlock)) {
+      return spBlock.replace(/<p:spPr\s*\/>/, `<p:spPr>${el}</p:spPr>`);
+    }
+    return spBlock;
+  }
+  const inner = spPrM[2];
+  // `<a:ln\b` cannot match `<a:lnTo` (no word boundary before 'T'), so
+  // custGeom path segments are safe.
+  const lnM = inner.match(/<a:ln\b[^>]*\/>|<a:ln\b[^>]*>[\s\S]*?<\/a:ln>/);
+  let newInner: string;
+  if (lnM) {
+    newInner = inner.slice(0, lnM.index!) + el + inner.slice(lnM.index! + lnM[0].length);
+  } else {
+    // Insert after fills, before <a:effectLst> per CT_ShapeProperties order.
+    const effIdx = inner.search(/<a:effectLst[\s/>]/);
+    const at = effIdx >= 0 ? effIdx : inner.length;
+    newInner = inner.slice(0, at) + el + inner.slice(at);
+  }
+  const rebuilt = spPrM[1] + newInner + '</p:spPr>';
+  return (
+    spBlock.slice(0, spPrM.index!) + rebuilt + spBlock.slice(spPrM.index! + spPrM[0].length)
+  );
+}
+
+/**
+ * Move the Nth `<p:sp>` to the front (last child of `<p:spTree>` — painted
+ * last, i.e. on top) or the back (first shape child, right after the
+ * `<p:nvGrpSpPr>`/`<p:grpSpPr>` header — painted first, i.e. underneath).
+ * One-step variants are intentionally not offered: front/back keeps the XML
+ * splice trivially safe. Shape indices shift after this op, so callers must
+ * re-parse (runStructuralOp) and re-derive selection from the new model.
+ * If the spTree anchors can't be found, the bytes are returned unchanged.
+ */
+export async function reorderShapeInSlide(
+  originalBytes: Uint8Array,
+  slideIndex: number,
+  shapeIndex: number,
+  dir: 'front' | 'back',
+): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(originalBytes);
+  const order = await resolvePresentationOrder(zip);
+  if (slideIndex < 0 || slideIndex >= order.length) {
+    throw new Error(`slide_out_of_range: ${slideIndex}`);
+  }
+  const path = order[slideIndex].path;
+  const xml = await mustReadString(zip, path);
+  const target = findNthShapeBlock(xml, shapeIndex);
+  if (!target) throw new Error(`shape_out_of_range: slide ${slideIndex} shape ${shapeIndex}`);
+  const without = xml.slice(0, target.start) + xml.slice(target.end);
+  let insertAt = -1;
+  if (dir === 'front') {
+    insertAt = without.indexOf('</p:spTree>');
+  } else {
+    // First grpSpPr in document order is the spTree's own header (group
+    // shapes' nested grpSpPr all come later).
+    const grp = without.match(/<p:grpSpPr\b[^>]*\/>|<p:grpSpPr\b[^>]*>[\s\S]*?<\/p:grpSpPr>/);
+    if (grp && grp.index !== undefined) insertAt = grp.index + grp[0].length;
+  }
+  if (insertAt < 0) return originalBytes; // anchors missing — never corrupt
+  const updated = without.slice(0, insertAt) + target.block + without.slice(insertAt);
+  zip.file(path, updated);
+  return await zip.generateAsync({ type: 'uint8array' });
+}
+
+/**
+ * Per-shape visual style inventory: explicit srgbClr solid fills and srgbClr
+ * outlines, keyed by shapeIndex (same `<p:sp>` walker order as extractRuns).
+ * Theme-relative fills / lines (schemeClr, style refs) are deliberately NOT
+ * captured — they can't be resolved without the theme, and an uncaptured
+ * shape is simply left byte-untouched on write.
+ */
+function extractShapeStyles(xml: string): {
+  fills: Record<number, string>;
+  lines: Record<number, { color?: string; widthPt?: number }>;
+} {
+  const fills: Record<number, string> = {};
+  const lines: Record<number, { color?: string; widthPt?: number }> = {};
+  const spRe = /<p:sp\b[\s\S]*?<\/p:sp>/g;
+  let i = 0;
+  for (let m = spRe.exec(xml); m !== null; m = spRe.exec(xml)) {
+    const spPr = m[0].match(/<p:spPr\b[^>]*>([\s\S]*?)<\/p:spPr>/);
+    if (spPr) {
+      const inner = spPr[1];
+      const lnIdx = inner.search(/<a:ln[\s/>]/);
+      const scope = lnIdx >= 0 ? inner.slice(0, lnIdx) : inner;
+      const fill = scope.match(/<a:solidFill>\s*<a:srgbClr\s+val="([0-9A-Fa-f]{6,8})"/);
+      if (fill) {
+        const hex = fill[1].length === 8 ? fill[1].slice(2) : fill[1];
+        fills[i] = hex.toUpperCase();
+      }
+      const ln = inner.match(/<a:ln\b([^>]*)>([\s\S]*?)<\/a:ln>/);
+      if (ln && !/<a:noFill\s*\/>/.test(ln[2])) {
+        const lc = ln[2].match(/<a:solidFill>\s*<a:srgbClr\s+val="([0-9A-Fa-f]{6,8})"/);
+        if (lc) {
+          const w = ln[1].match(/\bw="(\d+)"/);
+          const hex = lc[1].length === 8 ? lc[1].slice(2) : lc[1];
+          // OOXML default line width when `w` is absent ≈ 0.75 pt (9525 EMU).
+          lines[i] = { color: hex.toUpperCase(), widthPt: w ? Number(w[1]) / 12700 : 0.75 };
+        }
+      }
+    }
+    i += 1;
+  }
+  return { fills, lines };
+}
+
 // ── layout presets ───────────────────────────────────────────────────────
 
 export type PptxLayoutId =
@@ -794,19 +1080,23 @@ export type PptxLayoutId =
 
 export interface PptxLayoutDef {
   id: PptxLayoutId;
-  /** Localized label shown in the picker. */
-  label: string;
-  /** Short description for the menu hint. */
-  hint: string;
+  /** R409 — bilingual label/hint pairs, translated at the render site
+      (same labelZh/labelEn pattern as PptxEditor's SHAPE_OPTIONS). This
+      module is locale-agnostic data; calling tImp here would bake the
+      boot-time locale into a module const. */
+  labelZh: string;
+  labelEn: string;
+  hintZh: string;
+  hintEn: string;
 }
 
 export const PPTX_LAYOUTS: PptxLayoutDef[] = [
-  { id: 'titleSlide', label: '標題投影片', hint: '置中的主標題 + 副標題' },
-  { id: 'titleContent', label: '標題與內容', hint: '上方標題 + 一個內容區' },
-  { id: 'twoContent', label: '兩欄內容', hint: '上方標題 + 左右兩個內容區' },
-  { id: 'sectionHeader', label: '章節標題', hint: '大標題 + 小說明' },
-  { id: 'titleOnly', label: '僅標題', hint: '只有頂部一個標題列' },
-  { id: 'blank', label: '空白', hint: '清空所有文字框' },
+  { id: 'titleSlide', labelZh: '標題投影片', labelEn: 'Title slide', hintZh: '置中的主標題 + 副標題', hintEn: 'Centered main title + subtitle' },
+  { id: 'titleContent', labelZh: '標題與內容', labelEn: 'Title + content', hintZh: '上方標題 + 一個內容區', hintEn: 'Title on top + one content area' },
+  { id: 'twoContent', labelZh: '兩欄內容', labelEn: 'Two-column content', hintZh: '上方標題 + 左右兩個內容區', hintEn: 'Title on top + two content areas' },
+  { id: 'sectionHeader', labelZh: '章節標題', labelEn: 'Section header', hintZh: '大標題 + 小說明', hintEn: 'Large title + short description' },
+  { id: 'titleOnly', labelZh: '僅標題', labelEn: 'Title only', hintZh: '只有頂部一個標題列', hintEn: 'Just a single title bar on top' },
+  { id: 'blank', labelZh: '空白', labelEn: 'Blank', hintZh: '清空所有文字框', hintEn: 'Clears all text boxes' },
 ];
 
 interface LayoutBoxSpec {
@@ -1083,6 +1373,13 @@ function moveSldId(xml: string, from: number, to: number): string {
 }
 
 const RUN_BLOCK_RE = /<a:r>([\s\S]*?)<\/a:r>/g;
+/** Non-self-closing `<a:p>` blocks. CT_TextParagraph carries no attributes
+ *  and paragraphs never nest, so the lazy close is safe; `<a:pPr>` /
+ *  `<a:path>` can't match because they fail the literal `>` after `<a:p`.
+ *  Self-closing `<a:p/>` (empty paragraph) is intentionally skipped — it
+ *  contains no runs, and both the parser and applyParagraphAligns skip it
+ *  identically so paraIndex stays consistent between read and write. */
+const PARA_BLOCK_RE = /<a:p>[\s\S]*?<\/a:p>/g;
 const RPR_RE = /<a:rPr\b([^>]*?)(\/>|>([\s\S]*?)<\/a:rPr>)/;
 const TEXT_RE = /<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/;
 const SOLID_FILL_RE = /<a:solidFill>\s*<a:srgbClr\s+val="([0-9A-Fa-f]{6,8})"/;
@@ -1109,6 +1406,23 @@ function extractRuns(
     const frame = parseXfrm(block) ?? defaultFrame(shapes.length, slideSize);
     shapes.push({ start: m.index, end: m.index + block.length, frame });
   }
+  // Step 1.5: collect <a:p> paragraph ranges + algn so each run carries its
+  // paragraph's alignment and index (applyParagraphAligns patches by the
+  // same PARA_BLOCK_RE walk, so indices line up on write).
+  const paras: { start: number; end: number; align?: 'l' | 'ctr' | 'r' }[] = [];
+  PARA_BLOCK_RE.lastIndex = 0;
+  for (let m = PARA_BLOCK_RE.exec(xml); m !== null; m = PARA_BLOCK_RE.exec(xml)) {
+    // Anchored to the <a:p> open tag: the paragraph's own pPr is always its
+    // first child, and the anchor keeps a pPr nested inside <a:fld> from
+    // being misread as the paragraph's (same anchor as patchParaAlign).
+    const open = m[0].match(/^<a:p>\s*<a:pPr\b[^>]*>/);
+    const algn = open?.[0].match(/\balgn="(l|ctr|r)"/);
+    paras.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      align: algn ? (algn[1] as 'l' | 'ctr' | 'r') : undefined,
+    });
+  }
   // Step 2: walk every <a:r> and assign to its enclosing <p:sp> (if any).
   const runs: PptxTextRun[] = [];
   let i = 0;
@@ -1121,6 +1435,7 @@ function extractRuns(
     const style = parseRPr(inner);
     const idx = shapes.findIndex((s) => s.start <= m.index && m.index < s.end);
     const frame = idx >= 0 ? shapes[idx].frame : defaultFrame(shapes.length + i, slideSize);
+    const paraIdx = paras.findIndex((p) => p.start <= m.index && m.index < p.end);
     runs.push({
       id: nextRunId(),
       slideIndex,
@@ -1129,6 +1444,8 @@ function extractRuns(
       frame,
       text,
       style,
+      align: paraIdx >= 0 ? paras[paraIdx].align : undefined,
+      paraIndex: paraIdx >= 0 ? paraIdx : undefined,
     });
     i += 1;
   }
@@ -1212,6 +1529,65 @@ function applyRuns(xml: string, runs: PptxTextRun[]): string {
   }
   out += xml.slice(cursor);
   return out;
+}
+
+/**
+ * Second serialize pass (after applyRuns): patch each paragraph's
+ * `<a:pPr algn>` from the model. Paragraph membership comes from the runs'
+ * parse-time `paraIndex` — both passes walk the same PARA_BLOCK_RE over the
+ * same template bytes, so indices line up even when some `<a:r>` blocks
+ * were skipped by the parser. First run of a paragraph wins (the UI keeps
+ * paraIndex-siblings consistent). Paragraphs without model runs are left
+ * byte-untouched.
+ */
+function applyParagraphAligns(xml: string, runs: PptxTextRun[]): string {
+  const byPara = new Map<number, 'l' | 'ctr' | 'r' | undefined>();
+  for (const r of runs) {
+    if (r.paraIndex === undefined || byPara.has(r.paraIndex)) continue;
+    byPara.set(r.paraIndex, r.align);
+  }
+  if (byPara.size === 0) return xml;
+  let out = '';
+  let cursor = 0;
+  let k = 0;
+  PARA_BLOCK_RE.lastIndex = 0;
+  for (let m = PARA_BLOCK_RE.exec(xml); m !== null; m = PARA_BLOCK_RE.exec(xml)) {
+    out += xml.slice(cursor, m.index);
+    out += byPara.has(k) ? patchParaAlign(m[0], byPara.get(k)) : m[0];
+    cursor = m.index + m[0].length;
+    k += 1;
+  }
+  out += xml.slice(cursor);
+  return out;
+}
+
+/**
+ * Patch one `<a:p>` block's alignment. Conservative removal rule: an
+ * undefined model align only strips an existing `algn` when it is one of
+ * l / ctr / r — the values the model can represent. 'just' / 'dist' etc.
+ * parse to undefined and must round-trip untouched, so they are never
+ * removed here. A pPr that already carries the requested algn is returned
+ * byte-identical.
+ */
+function patchParaAlign(block: string, align: 'l' | 'ctr' | 'r' | undefined): string {
+  // Anchored to the <a:p> open tag — same anchor as extractRuns' paragraph
+  // walk, so a pPr nested inside <a:fld> can never be patched by mistake.
+  const open = block.match(/^(<a:p>\s*)<a:pPr\b([^>]*?)(\/?)>/);
+  if (align) {
+    if (open) {
+      if (new RegExp(`\\balgn="${align}"`).test(open[0])) return block; // already set
+      const attrs = setOrRemoveAttr(open[2] ?? '', 'algn', align);
+      return block.replace(open[0], `${open[1]}<a:pPr${attrs}${open[3]}>`);
+    }
+    // No pPr — inject one right after the <a:p> open tag (pPr must be the
+    // paragraph's first child per the schema).
+    return block.replace(/^<a:p>/, `<a:p><a:pPr algn="${align}"/>`);
+  }
+  if (open && /\balgn="(l|ctr|r)"/.test(open[0])) {
+    const attrs = setOrRemoveAttr(open[2] ?? '', 'algn', null);
+    return block.replace(open[0], `${open[1]}<a:pPr${attrs}${open[3]}>`);
+  }
+  return block;
 }
 
 function rewriteRunBlock(block: string, run: PptxTextRun): string {

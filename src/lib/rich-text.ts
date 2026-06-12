@@ -22,7 +22,7 @@
  *   when it did, we know exactly how to advance the caret.
  *
  * HTML shape we emit:
- *   `<strong>`, `<em>`, `<u>` for bold/italic/underline (semantic, matches
+ *   `<strong>`, `<em>`, `<u>`, `<s>` for bold/italic/underline/strikethrough (semantic, matches
  *   what mammoth produces and what `domToRuns` reads back). We escape any
  *   user-typed HTML metacharacters so a paragraph that literally contains
  *   "<script>" round-trips as text. Empty runs render as a single `\u200B`
@@ -42,14 +42,19 @@ export function runsToText(runs: DocxRun[]): string {
   return out;
 }
 
-/** True if two run styles produce the same B/I/U triple. */
+/** True if two run styles produce the same B/I/U/S quad. */
 export function runStylesEqual(
   a: DocxRunStyle | undefined,
   b: DocxRunStyle | undefined,
 ): boolean {
   if (!a && !b) return true;
   if (!a || !b) return false;
-  return !!a.bold === !!b.bold && !!a.italic === !!b.italic && !!a.underline === !!b.underline;
+  return (
+    !!a.bold === !!b.bold &&
+    !!a.italic === !!b.italic &&
+    !!a.underline === !!b.underline &&
+    !!a.strikethrough === !!b.strikethrough
+  );
 }
 
 /** Drop falsy fields; return undefined when no flag is set. */
@@ -59,6 +64,7 @@ export function normalizeRunStyle(s: DocxRunStyle | undefined): DocxRunStyle | u
   if (s.bold) out.bold = true;
   if (s.italic) out.italic = true;
   if (s.underline) out.underline = true;
+  if (s.strikethrough) out.strikethrough = true;
   return Object.keys(out).length === 0 ? undefined : out;
 }
 
@@ -102,6 +108,7 @@ export function runsToHtml(runs: DocxRun[]): string {
     const text = r.text === '' ? ZWSP : escapeHtml(r.text);
     let inner = text;
     const s = r.style;
+    if (s?.strikethrough) inner = `<s>${inner}</s>`;
     if (s?.underline) inner = `<u>${inner}</u>`;
     if (s?.italic) inner = `<em>${inner}</em>`;
     if (s?.bold) inner = `<strong>${inner}</strong>`;
@@ -138,6 +145,7 @@ export function domToRuns(root: Element): DocxRun[] {
         if (tag === 'STRONG' || tag === 'B') style.bold = true;
         if (tag === 'EM' || tag === 'I') style.italic = true;
         if (tag === 'U') style.underline = true;
+        if (tag === 'S' || tag === 'DEL' || tag === 'STRIKE') style.strikethrough = true;
         p = p.parentElement;
       }
       out.push({ text, style: normalizeRunStyle(style) });

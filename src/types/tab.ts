@@ -45,7 +45,7 @@ export interface HtmlTab extends BaseTab {
 
 export interface DocxTab extends BaseTab {
   type: 'docx';
-  /** Raw bytes; the renderer hands these to Univer Doc. */
+  /** Raw .docx bytes; parsed/serialized by lib/docx-adapter.ts. */
   data: Uint8Array;
 }
 

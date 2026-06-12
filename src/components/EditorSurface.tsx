@@ -3,7 +3,7 @@
  * the appropriate component.
  */
 
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import {
   Clock,
   Code2,
@@ -11,6 +11,7 @@ import {
   FileSpreadsheet,
   FileText,
   FolderOpen,
+  Loader2,
   Presentation,
   Sparkles,
 } from 'lucide-react';
@@ -21,13 +22,34 @@ import { exitOpen, tryEnterOpen } from '../lib/workspace-open-busy';
 import { isFileMissingError } from '../lib/utils';
 import { useT, tImp } from '../lib/i18n';
 import type { TabType } from '../types/manifest';
-import { DocxEditor } from './DocxEditor';
 import { ErrorBoundary } from './ErrorBoundary';
-import { HtmlEditor } from './HtmlEditor';
-import { MarkdownEditor } from './MarkdownEditor';
-import { PptxEditor } from './PptxEditor';
 import { TabBar } from './TabBar';
-import { XlsxEditor } from './XlsxEditor';
+
+// R415 — editors are code-split. Each one drags a heavy library graph
+// (CodeMirror+marked for markdown/html, mammoth+docx for Word, SheetJS×2
+// for Excel, JSZip XML tooling for PowerPoint); loading them eagerly put
+// every grammar and OOXML codec in the renderer's startup chunk (~6 MB).
+// React.lazy defers each editor chunk to the first time a tab of that
+// type is opened; Vite splits the chunks automatically. The Suspense
+// fallback below paints a centered spinner for the (one-time, local-disk)
+// load — typically a few tens of ms.
+const MarkdownEditor = lazy(() =>
+  import('./MarkdownEditor').then((m) => ({ default: m.MarkdownEditor })),
+);
+const HtmlEditor = lazy(() => import('./HtmlEditor').then((m) => ({ default: m.HtmlEditor })));
+const DocxEditor = lazy(() => import('./DocxEditor').then((m) => ({ default: m.DocxEditor })));
+const XlsxEditor = lazy(() => import('./XlsxEditor').then((m) => ({ default: m.XlsxEditor })));
+const PptxEditor = lazy(() => import('./PptxEditor').then((m) => ({ default: m.PptxEditor })));
+
+function EditorLoading(): JSX.Element {
+  const t = useT();
+  return (
+    <div className="h-full flex items-center justify-center gap-2 text-sm text-muted-foreground">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      {t('正在載入編輯器…', 'Loading editor…')}
+    </div>
+  );
+}
 
 export function EditorSurface(): JSX.Element {
   const { tabs, activeTabId } = useWorkspace();
@@ -47,11 +69,13 @@ export function EditorSurface(): JSX.Element {
         {!active && <EmptyState />}
         {active ? (
           <ErrorBoundary key={active.id} label={`Tab: ${active.name} (${active.type})`}>
-            {active.type === 'markdown' && <MarkdownEditor tab={active} />}
-            {active.type === 'html' && <HtmlEditor tab={active} />}
-            {active.type === 'docx' && <DocxEditor tab={active} />}
-            {active.type === 'xlsx' && <XlsxEditor tab={active} />}
-            {active.type === 'pptx' && <PptxEditor tab={active} />}
+            <Suspense fallback={<EditorLoading />}>
+              {active.type === 'markdown' && <MarkdownEditor tab={active} />}
+              {active.type === 'html' && <HtmlEditor tab={active} />}
+              {active.type === 'docx' && <DocxEditor tab={active} />}
+              {active.type === 'xlsx' && <XlsxEditor tab={active} />}
+              {active.type === 'pptx' && <PptxEditor tab={active} />}
+            </Suspense>
           </ErrorBoundary>
         ) : null}
       </div>
@@ -367,7 +391,7 @@ function EmptyState() {
                   key={type}
                   type="button"
                   onClick={() => addTab(type)}
-                  className="group flex items-start gap-3 px-3 py-3 rounded-lg border bg-card hover:border-primary/40 hover:bg-accent/40 transition-colors text-left"
+                  className="group flex items-start gap-3 px-3 py-3 rounded-lg border bg-card hover:border-primary/40 hover:bg-accent/40 active:bg-accent/60 transition-colors text-left"
                 >
                   <div className={`p-2 rounded-md ${iconClass}`}>
                     <Icon className="h-4 w-4" />
@@ -389,7 +413,7 @@ function EmptyState() {
           <button
             type="button"
             onClick={() => void onOpenExisting()}
-            className="w-full flex items-center gap-3 px-3 py-3 rounded-lg border bg-card hover:border-primary/40 hover:bg-accent/40 transition-colors text-left"
+            className="w-full flex items-center gap-3 px-3 py-3 rounded-lg border bg-card hover:border-primary/40 hover:bg-accent/40 active:bg-accent/60 transition-colors text-left"
           >
             <div className="p-2 rounded-md bg-primary/10 text-primary">
               <FolderOpen className="h-4 w-4" />
@@ -442,7 +466,7 @@ function EmptyState() {
                     <button
                       type="button"
                       onClick={() => void onOpenRecent(p)}
-                      className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-accent/40 transition-colors"
+                      className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-accent/40 active:bg-accent/60 transition-colors"
                       title={p}
                     >
                       <Clock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -463,7 +487,14 @@ function EmptyState() {
         )}
 
         <section className="text-xs text-muted-foreground border-t pt-4 space-y-1.5">
-          <div className="font-medium text-foreground">常用快捷鍵</div>
+          {/* R407 — bilingual heading + per-row labels. R405 swept the cards
+              and section headings above but missed this fresh-user discovery
+              cluster — every Shortcut row's `label` was hardcoded Chinese,
+              so an English-mode user saw "Ctrl+S 儲存", "Ctrl+E 匯出目前頁
+              籤" etc. in the welcome footer. Labels mirror the toolbar
+              tooltips at App.tsx (the user-facing source of truth for each
+              shortcut's name in both languages). */}
+          <div className="font-medium text-foreground">{t('常用快捷鍵', 'Common shortcuts')}</div>
           {/* Ctrl+Tab / Ctrl+Shift+Tab — sequential tab navigation, wired at
               App.tsx:719-733. Universal browser / VS Code / IDE muscle
               memory ("the keystroke users already know"), but until now the
@@ -628,18 +659,18 @@ function EmptyState() {
               tooltip wording verbatim ("開啟 .gd" / "進入專注模式") so the
               same Chinese phrase appears in tooltip and footer. */}
           <div className="flex flex-wrap gap-x-4 gap-y-1">
-            <Shortcut keys="Ctrl/⌘+N" label="新專案" />
-            <Shortcut keys="Ctrl/⌘+O" label="開啟 .gd" />
-            <Shortcut keys="Ctrl/⌘+S" label="儲存" />
-            <Shortcut keys="Ctrl/⌘+Shift+S" label="另存新檔" />
-            <Shortcut keys="Ctrl/⌘+E" label="匯出目前頁籤" />
-            <Shortcut keys="Ctrl/⌘+F" label="尋找與取代" />
-            <Shortcut keys="Ctrl/⌘+Z" label="復原 AI 變更" />
-            <Shortcut keys="Ctrl/⌘+Shift+Z" label="重做 AI 變更" />
-            <Shortcut keys="Ctrl/⌘+Shift+F" label="進入專注模式" />
-            <Shortcut keys="Ctrl/⌘+L" label="聚焦 AI 對話框" />
-            <Shortcut keys="Ctrl/⌘+1–9" label="切換頁籤" />
-            <Shortcut keys="Ctrl/⌘+Tab" label="切換上/下個頁籤" />
+            <Shortcut keys="Ctrl/⌘+N" label={t('新專案', 'New project')} />
+            <Shortcut keys="Ctrl/⌘+O" label={t('開啟 .gd', 'Open .gd')} />
+            <Shortcut keys="Ctrl/⌘+S" label={t('儲存', 'Save')} />
+            <Shortcut keys="Ctrl/⌘+Shift+S" label={t('另存新檔', 'Save As')} />
+            <Shortcut keys="Ctrl/⌘+E" label={t('匯出目前頁籤', 'Export current tab')} />
+            <Shortcut keys="Ctrl/⌘+F" label={t('尋找與取代', 'Find & Replace')} />
+            <Shortcut keys="Ctrl/⌘+Z" label={t('復原 AI 變更', 'Undo AI change')} />
+            <Shortcut keys="Ctrl/⌘+Shift+Z" label={t('重做 AI 變更', 'Redo AI change')} />
+            <Shortcut keys="Ctrl/⌘+Shift+F" label={t('進入專注模式', 'Enter focus mode')} />
+            <Shortcut keys="Ctrl/⌘+L" label={t('聚焦 AI 對話框', 'Focus AI input')} />
+            <Shortcut keys="Ctrl/⌘+1–9" label={t('切換頁籤', 'Switch tab')} />
+            <Shortcut keys="Ctrl/⌘+Tab" label={t('切換上/下個頁籤', 'Cycle to next/previous tab')} />
           </div>
         </section>
       </div>

@@ -23,6 +23,7 @@ import {
   AlignStartHorizontal,
   ArrowRight,
   Bold,
+  BringToFront,
   ChevronDown,
   ChevronUp,
   Circle,
@@ -32,11 +33,13 @@ import {
   Italic,
   LayoutTemplate,
   List,
+  PaintBucket,
   Palette,
   Play,
   Plus,
   Presentation,
   Search,
+  SendToBack,
   Shapes,
   Square,
   Trash2,
@@ -66,8 +69,11 @@ import {
   duplicateSlide,
   moveShapeOnSlide,
   parsePptx,
+  reorderShapeInSlide,
   reorderSlides,
   serializePptx,
+  setShapeFill,
+  setShapeLine,
 } from '../lib/pptx-adapter';
 import { clampToViewport, cn } from '../lib/utils';
 import { notify } from '../store/toast';
@@ -208,6 +214,29 @@ export function PptxEditor({ tab }: Props): JSX.Element {
   // App.tsx::performSave's `savingRef` guard at App.tsx:316-328 — early
   // return + try/finally so a thrown error still releases the flag.
   const structuralOpInFlightRef = useRef(false);
+
+  // Shape-style (fill / outline) commit pipeline. <input type=color> fires
+  // change events continuously while the user drags the picker, but each
+  // commit is a full structural round-trip (serialize → byte patch →
+  // re-parse). Commits are debounced through shapeStyleTimerRef, and
+  // `shapePreview` carries an optimistic per-shape overlay so the canvas
+  // tracks the picker live while the byte-level patch catches up. The
+  // preview is cleared once the committed model lands (or on slide switch).
+  const shapeStyleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [shapePreview, setShapePreview] = useState<{
+    shapeIdx: number;
+    fill?: string;
+    lineColor?: string;
+  } | null>(null);
+  useEffect(() => {
+    setShapePreview(null); // stale preview never survives a slide switch
+  }, [activeIdx]);
+  useEffect(
+    () => () => {
+      if (shapeStyleTimerRef.current) clearTimeout(shapeStyleTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -538,12 +567,27 @@ export function PptxEditor({ tab }: Props): JSX.Element {
   /**
    * Run a structural slide op (duplicate / delete / reorder). We must flush
    * any pending text edits first so they make it into the new bytes.
+   * Returns the freshly-parsed model on success or null when the op was
+   * dropped / failed. Existing fire-and-forget callers ignore the return.
+   *
+   * `nextActiveRunId` (optional) lets shape-targeted ops (fill / outline /
+   * z-order) keep "their" shape selected: run ids regenerate on every
+   * re-parse, so the callback derives the new id from the new model. It is
+   * applied in the SAME synchronous block as setModel/setActiveIdx — React
+   * 18 batches all three into one commit, so the toolbar's shape cluster
+   * never unmounts in between (an unmount would kill an in-progress native
+   * color-picker drag). Default (omitted) clears the selection — the right
+   * behaviour for delete / duplicate / reorder-slide.
    */
-  const runStructuralOp = async (op: (bytes: Uint8Array) => Promise<Uint8Array>, nextActiveIdx: (n: number) => number) => {
-    if (!model) return;
+  const runStructuralOp = async (
+    op: (bytes: Uint8Array) => Promise<Uint8Array>,
+    nextActiveIdx: (n: number) => number,
+    nextActiveRunId?: (m: PptxModel) => string | null,
+  ): Promise<PptxModel | null> => {
+    if (!model) return null;
     // R95 — drop reentrant calls. See structuralOpInFlightRef declaration
     // above for the race detail.
-    if (structuralOpInFlightRef.current) return;
+    if (structuralOpInFlightRef.current) return null;
     structuralOpInFlightRef.current = true;
     if (serializeTimer.current) {
       clearTimeout(serializeTimer.current);
@@ -598,13 +642,25 @@ export function PptxEditor({ tab }: Props): JSX.Element {
       skipNextScheduleRef.current = true;
       setModel(newModel);
       setActiveIdx((cur) => Math.max(0, Math.min(nextActiveIdx(cur), newModel.slides.length - 1)));
-      setActiveRunId(null);
+      setActiveRunId(nextActiveRunId ? nextActiveRunId(newModel) : null);
+      return newModel;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return null;
     } finally {
       structuralOpInFlightRef.current = false;
     }
   };
+
+  // Latest-ref for runStructuralOp. The shape-style commits below fire from
+  // a debounce timer whose closure pins the render-time instance — and that
+  // instance closes over a render-time `model`. If the user typed into a
+  // textarea during the debounce window, the stale instance would flush the
+  // OLD model and drop those keystrokes. The ref always points at the
+  // freshest instance (reassigned every render), so timer-fired ops
+  // serialize the current model. Same "latest ref" idiom as activeIdxRef.
+  const runStructuralOpRef = useRef(runStructuralOp);
+  runStructuralOpRef.current = runStructuralOp;
 
   const handleDuplicate = (idx: number) =>
     runStructuralOp(
@@ -622,7 +678,8 @@ export function PptxEditor({ tab }: Props): JSX.Element {
       // sibling app.confirm callsites; this destructive operation
       // ("不可 Ctrl+Z 還原") is especially user-unfriendly to fail silently.
       try {
-        if (!(await window.gendoc.app.confirm(`刪除第 ${idx + 1} 張投影片？此動作無法用 Ctrl+Z 還原。`))) return;
+        // R409 — i18n
+        if (!(await window.gendoc.app.confirm(tImp(`刪除第 ${idx + 1} 張投影片？此動作無法用 Ctrl+Z 還原。`, `Delete slide ${idx + 1}? This cannot be undone with Ctrl+Z.`)))) return;
         await runStructuralOp(
           (b) => deleteSlide(b, idx),
           (cur) => (cur > idx ? cur - 1 : cur === idx ? Math.max(0, idx - 1) : cur),
@@ -698,14 +755,20 @@ export function PptxEditor({ tab }: Props): JSX.Element {
 
   const handleApplyLayout = (layoutId: PptxLayoutId) => {
     if (!model) return;
-    const label = PPTX_LAYOUTS.find((l) => l.id === layoutId)?.label ?? layoutId;
+    // R409 — bilingual layout name for the confirm prompt below.
+    const def = PPTX_LAYOUTS.find((l) => l.id === layoutId);
+    const label = def ? tImp(def.labelZh, def.labelEn) : layoutId;
     // Async path — see handleDelete comment.
     void (async () => {
       // R292 — wrap the confirm-reject path; see handleDelete sibling.
       try {
         if (
           !(await window.gendoc.app.confirm(
-            `套用「${label}」會清除目前投影片的文字框內容，確定套用？此動作無法用 Ctrl+Z 還原。`,
+            // R409 — i18n
+            tImp(
+              `套用「${label}」會清除目前投影片的文字框內容，確定套用？此動作無法用 Ctrl+Z 還原。`,
+              `Applying "${label}" will clear this slide's text boxes. Apply anyway? This cannot be undone with Ctrl+Z.`,
+            ),
           ))
         )
           return;
@@ -726,7 +789,8 @@ export function PptxEditor({ tab }: Props): JSX.Element {
       try {
         if (
           !(await window.gendoc.app.confirm(
-            `刪除這個文字框？此動作無法用 Ctrl+Z 還原。`,
+            // R409 — i18n
+            tImp(`刪除這個文字框？此動作無法用 Ctrl+Z 還原。`, `Delete this text box? This cannot be undone with Ctrl+Z.`),
           ))
         )
           return;
@@ -818,6 +882,152 @@ export function PptxEditor({ tab }: Props): JSX.Element {
     );
   };
 
+  // ── shape fill / outline / z-order ──────────────────────────────────
+  // All three flow through runStructuralOp (byte patch + re-parse) like
+  // moveShapeOnSlide, passing a nextActiveRunId callback so the touched
+  // shape stays selected across the re-parse — otherwise the toolbar's
+  // shape cluster would vanish after every color tweak and the user
+  // couldn't keep adjusting.
+  const findShapeRunId = (
+    m: PptxModel,
+    slideIdx: number,
+    shapeIdx: number,
+    preferRunIdx?: number,
+  ): string | null => {
+    const slide = m.slides[slideIdx];
+    if (!slide) return null;
+    const candidates = slide.runs.filter((r) => r.shapeIndex === shapeIdx);
+    const hit = candidates.find((r) => r.runIndex === preferRunIdx) ?? candidates[0];
+    return hit ? hit.id : null;
+  };
+
+  /**
+   * Debounced commit for shape-style edits. If a structural op is already
+   * in flight when the timer fires, re-arm instead of dropping — the
+   * reentrancy guard in runStructuralOp drops calls silently, which would
+   * lose the user's final picker color.
+   */
+  const scheduleShapeStyleCommit = (commit: () => void, delay = 350) => {
+    if (shapeStyleTimerRef.current) clearTimeout(shapeStyleTimerRef.current);
+    const fire = () => {
+      if (structuralOpInFlightRef.current) {
+        shapeStyleTimerRef.current = setTimeout(fire, 200);
+        return;
+      }
+      shapeStyleTimerRef.current = null;
+      commit();
+    };
+    shapeStyleTimerRef.current = setTimeout(fire, delay);
+  };
+
+  const commitShapeFill = (shapeIdx: number, hex: string | null, preferRunIdx?: number) => {
+    void (async () => {
+      // Via the latest-ref: this runs from a debounce timer, see
+      // runStructuralOpRef doc-block.
+      await runStructuralOpRef.current(
+        (b) => setShapeFill(b, activeIdx, shapeIdx, hex),
+        () => activeIdx,
+        (m) => findShapeRunId(m, activeIdx, shapeIdx, preferRunIdx),
+      );
+      setShapePreview(null);
+    })();
+  };
+
+  const handleShapeFillInput = (hex: string) => {
+    if (!activeRun || activeRun.shapeIndex < 0) return;
+    const shapeIdx = activeRun.shapeIndex;
+    const runIdx = activeRun.runIndex;
+    const cleaned = hex.replace(/^#/, '').toUpperCase();
+    setShapePreview((p) => ({
+      ...(p && p.shapeIdx === shapeIdx ? p : {}),
+      shapeIdx,
+      fill: cleaned,
+    }));
+    scheduleShapeStyleCommit(() => commitShapeFill(shapeIdx, cleaned, runIdx));
+  };
+
+  // Clear = remove the explicit <a:solidFill> so the shape falls back to
+  // its inherited / theme default (see setShapeFill doc-block).
+  const handleClearShapeFill = () => {
+    if (!activeRun || activeRun.shapeIndex < 0) return;
+    const shapeIdx = activeRun.shapeIndex;
+    const runIdx = activeRun.runIndex;
+    setShapePreview(null);
+    scheduleShapeStyleCommit(() => commitShapeFill(shapeIdx, null, runIdx), 0);
+  };
+
+  const commitShapeLine = (
+    shapeIdx: number,
+    line: { color?: string; widthPt?: number } | null,
+    preferRunIdx?: number,
+  ) => {
+    void (async () => {
+      // Via the latest-ref — debounce-timer call site, see runStructuralOpRef.
+      await runStructuralOpRef.current(
+        (b) => setShapeLine(b, activeIdx, shapeIdx, line),
+        () => activeIdx,
+        (m) => findShapeRunId(m, activeIdx, shapeIdx, preferRunIdx),
+      );
+      setShapePreview(null);
+    })();
+  };
+
+  const handleShapeLineWidth = (widthPt: number | null) => {
+    if (!activeRun || !active || activeRun.shapeIndex < 0) return;
+    const shapeIdx = activeRun.shapeIndex;
+    const runIdx = activeRun.runIndex;
+    if (widthPt === null) {
+      // 無外框 — writes <a:ln><a:noFill/></a:ln> (explicit, deterministic).
+      scheduleShapeStyleCommit(() => commitShapeLine(shapeIdx, null, runIdx), 0);
+      return;
+    }
+    const color =
+      (shapePreview?.shapeIdx === shapeIdx ? shapePreview.lineColor : undefined) ??
+      active.shapeLines?.[shapeIdx]?.color ??
+      '000000';
+    scheduleShapeStyleCommit(() => commitShapeLine(shapeIdx, { color, widthPt }, runIdx), 0);
+  };
+
+  const handleShapeLineColorInput = (hex: string) => {
+    if (!activeRun || !active || activeRun.shapeIndex < 0) return;
+    const shapeIdx = activeRun.shapeIndex;
+    const runIdx = activeRun.runIndex;
+    const cleaned = hex.replace(/^#/, '').toUpperCase();
+    setShapePreview((p) => ({
+      ...(p && p.shapeIdx === shapeIdx ? p : {}),
+      shapeIdx,
+      lineColor: cleaned,
+    }));
+    const widthPt = active.shapeLines?.[shapeIdx]?.widthPt ?? 1;
+    scheduleShapeStyleCommit(() => commitShapeLine(shapeIdx, { color: cleaned, widthPt }, runIdx));
+  };
+
+  /**
+   * Bring-to-front / send-to-back. Shape indices change after the reorder
+   * (the <p:sp> is spliced to the end / start of <p:spTree>), so we compute
+   * the moved shape's NEW index from the returned model: it carries the
+   * selected run, so after 'back' it is sp index 0, and after 'front' it is
+   * the max shapeIndex among run-bearing shapes (it is the last <p:sp>).
+   * The run's runIndex also shifts with document order, so reselect falls
+   * back to the shape's first run.
+   */
+  const handleZOrder = (dir: 'front' | 'back') => {
+    if (!model || !activeRun || activeRun.shapeIndex < 0) return;
+    const shapeIdx = activeRun.shapeIndex;
+    void runStructuralOp(
+      (b) => reorderShapeInSlide(b, activeIdx, shapeIdx, dir),
+      () => activeIdx,
+      (m) => {
+        const slide = m.slides[activeIdx];
+        if (!slide) return null;
+        const indices = slide.runs.filter((r) => r.shapeIndex >= 0).map((r) => r.shapeIndex);
+        if (indices.length === 0) return null;
+        const newIdx = dir === 'back' ? 0 : Math.max(...indices);
+        return findShapeRunId(m, activeIdx, newIdx);
+      },
+    );
+  };
+
   const updateRun = (slideIdx: number, runId: string, patch: Partial<PptxTextRun>) => {
     setModel((prev) => {
       if (!prev) return prev;
@@ -879,7 +1089,7 @@ export function PptxEditor({ tab }: Props): JSX.Element {
           bestText = texts.join(' ').trim();
         }
       }
-      return { idx, title: bestText || '(無標題)' };
+      return { idx, title: bestText }; // R409 — '' sentinel; render sites supply locale-aware '(無標題)' fallback
     });
   }, [model]);
 
@@ -888,6 +1098,41 @@ export function PptxEditor({ tab }: Props): JSX.Element {
     const cur = activeRun.style ?? {};
     const next: PptxRunStyle = { ...cur, [key]: !cur[key] };
     updateRun(active.index, activeRun.id, { style: normalizeStyle(next) });
+  };
+
+  /**
+   * Paragraph alignment (<a:pPr algn>). Toggle semantics: clicking the
+   * already-active button clears the explicit alignment (back to the
+   * inherited default). Alignment is paragraph-level, so we update every
+   * run sharing the active run's paraIndex — keeping siblings consistent
+   * is what lets the serializer use "first run of the paragraph wins".
+   * Flows through setModel + scheduleSerialize like updateRun, so it is
+   * Ctrl+Z-undoable.
+   */
+  const setParaAlign = (a: 'l' | 'ctr' | 'r') => {
+    if (!activeRun || !active) return;
+    const next = activeRun.align === a ? undefined : a;
+    const pi = activeRun.paraIndex;
+    const slideIdx = active.index;
+    const runId = activeRun.id;
+    setModel((prev) => {
+      if (!prev) return prev;
+      const slides = prev.slides.map((s) =>
+        s.index !== slideIdx
+          ? s
+          : {
+              ...s,
+              runs: s.runs.map((r) =>
+                (pi !== undefined ? r.paraIndex === pi : r.id === runId)
+                  ? { ...r, align: next }
+                  : r,
+              ),
+            },
+      );
+      const nm = { ...prev, slides };
+      scheduleSerialize(nm);
+      return nm;
+    });
   };
 
   // Ctrl/Cmd+B / +I / +U shortcuts. PptxRunStyle now models underline as
@@ -1011,14 +1256,14 @@ export function PptxEditor({ tab }: Props): JSX.Element {
   if (loading) {
     return (
       <div className="h-full w-full flex items-center justify-center text-muted-foreground text-sm">
-        正在解析 pptx…
+        {t('正在解析 pptx…', 'Parsing pptx…')} {/* R409 — i18n */}
       </div>
     );
   }
   if (error) {
     return (
       <div className="h-full w-full flex items-center justify-center text-destructive text-sm p-8 text-center">
-        無法解析 pptx：{error}
+        {t('無法解析 pptx：', 'Failed to parse pptx: ')}{error} {/* R409 — i18n */}
       </div>
     );
   }
@@ -1028,8 +1273,11 @@ export function PptxEditor({ tab }: Props): JSX.Element {
         <Presentation className="h-12 w-12" />
         <div className="text-sm">{t('這個 pptx 頁籤還是空的。', 'This pptx tab is still empty.')}</div>
         <div className="text-xs max-w-md">
-          MVP 的 pptx 編輯需要從既有 .pptx 檔開始（會保留 layout / 圖片 / 樣式）。
-          請從「檔案 → 開啟」載入已有的 pptx，或先用 Markdown 頁籤編寫內容、之後再匯出。
+          {/* R409 — i18n */}
+          {t(
+            'MVP 的 pptx 編輯需要從既有 .pptx 檔開始（會保留 layout / 圖片 / 樣式）。請從「檔案 → 開啟」載入已有的 pptx，或先用 Markdown 頁籤編寫內容、之後再匯出。',
+            'Pptx editing in this MVP starts from an existing .pptx file (layout / images / styles are preserved). Open an existing pptx via File → Open, or draft the content in a Markdown tab and export it later.',
+          )}
         </div>
       </div>
     );
@@ -1101,6 +1349,19 @@ export function PptxEditor({ tab }: Props): JSX.Element {
   const isFileDrag = (e: React.DragEvent): boolean => {
     return Array.from(e.dataTransfer.types).includes('Files');
   };
+
+  // Shape-cluster state for the toolbar — preview (mid-picker-drag) wins
+  // over the parsed model so the swatch tracks the user's hand live.
+  const activeShapeIdx = activeRun && activeRun.shapeIndex >= 0 ? activeRun.shapeIndex : null;
+  const previewForShape =
+    activeShapeIdx != null && shapePreview?.shapeIdx === activeShapeIdx ? shapePreview : null;
+  const activeShapeFill =
+    activeShapeIdx != null
+      ? (previewForShape?.fill ?? active.shapeFills?.[activeShapeIdx])
+      : undefined;
+  const activeShapeLine = activeShapeIdx != null ? active.shapeLines?.[activeShapeIdx] : undefined;
+  const activeShapeLineColor = previewForShape?.lineColor ?? activeShapeLine?.color;
+  const activeShapeIsPicture = activeShapeIdx != null && !!active.pictures?.[activeShapeIdx];
 
   return (
     <div
@@ -1174,10 +1435,21 @@ export function PptxEditor({ tab }: Props): JSX.Element {
         navOpen={navOpen}
         onToggleNav={() => setNavOpen((v) => !v)}
         onToggleStyle={toggleStyle}
+        onSetParaAlign={setParaAlign}
         onSetColor={setColor}
         onClearColor={clearColor}
         onSetSize={setSize}
         onSetFontFamily={setFontFamily}
+        shapeSelected={activeShapeIdx != null}
+        shapeIsPicture={activeShapeIsPicture}
+        shapeFill={activeShapeFill}
+        shapeLineColor={activeShapeLineColor}
+        shapeLineWidthPt={activeShapeLine?.widthPt}
+        onShapeFillInput={handleShapeFillInput}
+        onClearShapeFill={handleClearShapeFill}
+        onShapeLineWidth={handleShapeLineWidth}
+        onShapeLineColorInput={handleShapeLineColorInput}
+        onZOrder={handleZOrder}
         onPresent={() => setPresenting(true)}
         onOpenFind={() => {
           setFindOpen(true);
@@ -1392,6 +1664,9 @@ export function PptxEditor({ tab }: Props): JSX.Element {
               slideSize={model.slideSize}
               runs={active.runs}
               pictures={active.pictures}
+              shapeFills={active.shapeFills}
+              shapeLines={active.shapeLines}
+              stylePreview={shapePreview}
               activeRunId={activeRunId}
               onRunFocus={(id) => setActiveRunId(id)}
               onRunChange={(id, text) => updateRun(active.index, id, { text })}
@@ -1421,7 +1696,7 @@ export function PptxEditor({ tab }: Props): JSX.Element {
         // depth counter would never settle.
         <div className="pointer-events-none absolute inset-0 bg-primary/5 border-2 border-dashed border-primary/40 z-50 flex items-center justify-center">
           <div className="px-3 py-1.5 rounded bg-background/90 text-xs text-primary border border-primary/40 shadow">
-            放開即插入圖片到目前投影片
+            {t('放開即插入圖片到目前投影片', 'Release to insert the image into the current slide')} {/* R409 — i18n */}
           </div>
         </div>
       )}
@@ -1436,8 +1711,8 @@ function Banner(): JSX.Element {
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
       <span>
         {t(
-          'PowerPoint MVP 編輯：可改文字框 + 粗體 / 斜體 / 字色 / 字級；左側可新增 / 複製 / 刪除 / 上下移動投影片。新增 pptx 會自動帶一張預設投影片。',
-          'PowerPoint MVP editor: edit text boxes + bold / italic / color / font size; add / duplicate / delete / reorder slides in the side panel. New pptx files start with one default slide.',
+          'PowerPoint MVP 編輯：可改文字框 + 粗體 / 斜體 / 字色 / 字級 / 段落對齊；圖形可填色、設定外框與移到最前 / 最後；左側可新增 / 複製 / 刪除 / 上下移動投影片。新增 pptx 會自動帶一張預設投影片。',
+          'PowerPoint MVP editor: edit text boxes + bold / italic / color / font size / paragraph alignment; shapes support fill, outline and bring-to-front / send-to-back; add / duplicate / delete / reorder slides in the side panel. New pptx files start with one default slide.',
         )}
       </span>
     </div>
@@ -1452,10 +1727,21 @@ function FormatToolbar({
   navOpen,
   onToggleNav,
   onToggleStyle,
+  onSetParaAlign,
   onSetColor,
   onClearColor,
   onSetSize,
   onSetFontFamily,
+  shapeSelected,
+  shapeIsPicture,
+  shapeFill,
+  shapeLineColor,
+  shapeLineWidthPt,
+  onShapeFillInput,
+  onClearShapeFill,
+  onShapeLineWidth,
+  onShapeLineColorInput,
+  onZOrder,
   onPresent,
   onOpenFind,
 }: {
@@ -1463,10 +1749,23 @@ function FormatToolbar({
   navOpen: boolean;
   onToggleNav: () => void;
   onToggleStyle: (k: 'bold' | 'italic' | 'underline') => void;
+  onSetParaAlign: (a: 'l' | 'ctr' | 'r') => void;
   onSetColor: (hex: string) => void;
   onClearColor: () => void;
   onSetSize: (pt: number | undefined) => void;
   onSetFontFamily: (name: string | undefined) => void;
+  /** True when the active run sits in a real `<p:sp>` (shapeIndex >= 0). */
+  shapeSelected: boolean;
+  /** Picture shapes (blipFill) can't be solid-filled — fill UI disables. */
+  shapeIsPicture: boolean;
+  shapeFill?: string;
+  shapeLineColor?: string;
+  shapeLineWidthPt?: number;
+  onShapeFillInput: (hex: string) => void;
+  onClearShapeFill: () => void;
+  onShapeLineWidth: (pt: number | null) => void;
+  onShapeLineColorInput: (hex: string) => void;
+  onZOrder: (dir: 'front' | 'back') => void;
   onPresent: () => void;
   onOpenFind: () => void;
 }): JSX.Element {
@@ -1474,6 +1773,12 @@ function FormatToolbar({
   const disabled = !run;
   const style = run?.style ?? {};
   const tDisabled = t('請先點選一個文字框', 'Select a text box first');
+  // Outline width select value: '' = no explicit outline; otherwise snap the
+  // parsed widthPt (may be fractional, e.g. 0.75 default) to the 1/2/3 set.
+  const lineWidthValue =
+    shapeLineWidthPt !== undefined
+      ? String(Math.min(3, Math.max(1, Math.round(shapeLineWidthPt))))
+      : '';
   return (
     <div className={cn('flex items-center gap-0.5 px-2 py-1 border-b bg-secondary/30')}>
       {/* Outline toggle — first item, mirrors DocxEditor. NOT disabled when
@@ -1509,6 +1814,38 @@ function FormatToolbar({
       </ToolbarBtn>
       <ToolbarBtn active={!!style.underline} disabled={disabled} title={disabled ? tDisabled : t('底線 (Ctrl+U)', 'Underline (Ctrl+U)')} onClick={() => onToggleStyle('underline')}>
         <Underline className="h-3.5 w-3.5" />
+      </ToolbarBtn>
+      <Divider />
+      {/* Paragraph alignment (<a:pPr algn>) — toggle buttons; clicking the
+          active one clears the explicit alignment back to the inherited
+          default. Wording says 文字 to distinguish from the AlignmentPalette
+          near the canvas, which aligns the SHAPE to the slide. */}
+      <ToolbarBtn
+        active={run?.align === 'l'}
+        disabled={disabled}
+        title={disabled ? tDisabled : t('文字靠左對齊', 'Align text left')}
+        ariaLabel={t('文字靠左對齊', 'Align text left')}
+        onClick={() => onSetParaAlign('l')}
+      >
+        <AlignLeft className="h-3.5 w-3.5" />
+      </ToolbarBtn>
+      <ToolbarBtn
+        active={run?.align === 'ctr'}
+        disabled={disabled}
+        title={disabled ? tDisabled : t('文字置中對齊', 'Center text')}
+        ariaLabel={t('文字置中對齊', 'Center text')}
+        onClick={() => onSetParaAlign('ctr')}
+      >
+        <AlignCenter className="h-3.5 w-3.5" />
+      </ToolbarBtn>
+      <ToolbarBtn
+        active={run?.align === 'r'}
+        disabled={disabled}
+        title={disabled ? tDisabled : t('文字靠右對齊', 'Align text right')}
+        ariaLabel={t('文字靠右對齊', 'Align text right')}
+        onClick={() => onSetParaAlign('r')}
+      >
+        <AlignRight className="h-3.5 w-3.5" />
       </ToolbarBtn>
       <Divider />
       {/* R97 — extend the R92 disabled-state-tooltip flip to the rest of the
@@ -1608,6 +1945,111 @@ function FormatToolbar({
         {run ? t(`已選：第 ${run.runIndex + 1} 個文字框`, `Selected: text box ${run.runIndex + 1}`) : t('點選一個文字框以開始編輯', 'Click a text box to start editing')}
       </span>
       </div>
+      {/* 「圖形」cluster — only when the selection maps to a real <p:sp>.
+          Fill + outline + z-order all patch the shape's XML through the
+          structural-op pipeline; the canvas overlay previews colors live. */}
+      {shapeSelected && (
+        <>
+          <Divider />
+          <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+            {t('圖形', 'Shape')}
+          </span>
+          <span className="relative inline-flex items-center ml-1">
+            <label
+              title={
+                shapeIsPicture
+                  ? t('圖片圖形不支援填色', 'Picture shapes cannot be filled')
+                  : t('圖形填色', 'Shape fill color')
+              }
+              // Preserve current run selection — same mousedown guard as the
+              // text colour picker above.
+              onMouseDown={(e) => e.preventDefault()}
+              className={cn(
+                'h-7 w-7 inline-flex items-center justify-center rounded transition-colors cursor-pointer',
+                'text-muted-foreground hover:text-foreground hover:bg-secondary',
+                shapeIsPicture && 'cursor-not-allowed opacity-50 pointer-events-none',
+              )}
+            >
+              <span className="relative">
+                <PaintBucket className="h-3.5 w-3.5" />
+                <span
+                  className="absolute -bottom-0.5 left-0 right-0 h-0.5 rounded"
+                  style={{ background: shapeFill ? `#${shapeFill}` : 'currentColor' }}
+                />
+              </span>
+              <input
+                type="color"
+                aria-label={t('圖形填色', 'Shape fill color')}
+                value={shapeFill ? `#${shapeFill}` : '#4472C4'}
+                onChange={(e) => onShapeFillInput(e.target.value)}
+                disabled={shapeIsPicture}
+                className="absolute inset-0 opacity-0 cursor-pointer"
+              />
+            </label>
+            {shapeFill && !shapeIsPicture ? (
+              <button
+                type="button"
+                title={t('清除填色（還原預設）', 'Clear fill (restore default)')}
+                aria-label={t('清除填色', 'Clear fill')}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={onClearShapeFill}
+                className="ml-px text-muted-foreground hover:text-destructive text-[10px] leading-none px-0.5"
+              >
+                ×
+              </button>
+            ) : null}
+          </span>
+          <select
+            value={lineWidthValue}
+            onChange={(e) => onShapeLineWidth(e.target.value === '' ? null : Number(e.target.value))}
+            className="h-7 text-xs rounded border border-border bg-background px-1.5 ml-1"
+            title={t('外框寬度', 'Outline width')}
+            aria-label={t('外框寬度', 'Outline width')}
+          >
+            <option value="">{t('無外框', 'No outline')}</option>
+            <option value="1">1 pt</option>
+            <option value="2">2 pt</option>
+            <option value="3">3 pt</option>
+          </select>
+          <label
+            title={t('外框顏色', 'Outline color')}
+            onMouseDown={(e) => e.preventDefault()}
+            className={cn(
+              'relative h-7 w-7 inline-flex items-center justify-center rounded transition-colors cursor-pointer',
+              'text-muted-foreground hover:text-foreground hover:bg-secondary',
+            )}
+          >
+            <span className="relative">
+              <Square className="h-3.5 w-3.5" />
+              <span
+                className="absolute -bottom-0.5 left-0 right-0 h-0.5 rounded"
+                style={{ background: shapeLineColor ? `#${shapeLineColor}` : 'currentColor' }}
+              />
+            </span>
+            <input
+              type="color"
+              aria-label={t('外框顏色', 'Outline color')}
+              value={shapeLineColor ? `#${shapeLineColor}` : '#000000'}
+              onChange={(e) => onShapeLineColorInput(e.target.value)}
+              className="absolute inset-0 opacity-0 cursor-pointer"
+            />
+          </label>
+          <ToolbarBtn
+            title={t('移到最前', 'Bring to front')}
+            ariaLabel={t('移到最前', 'Bring to front')}
+            onClick={() => onZOrder('front')}
+          >
+            <BringToFront className="h-3.5 w-3.5" />
+          </ToolbarBtn>
+          <ToolbarBtn
+            title={t('移到最後', 'Send to back')}
+            ariaLabel={t('移到最後', 'Send to back')}
+            onClick={() => onZOrder('back')}
+          >
+            <SendToBack className="h-3.5 w-3.5" />
+          </ToolbarBtn>
+        </>
+      )}
       <div className="ml-auto" />
       {/* Find & Replace — Ctrl+F is bound (line ~570) but the keyboard
           shortcut is invisible to mouse users. Surface it in the toolbar
@@ -1625,7 +2067,7 @@ function FormatToolbar({
         className="h-7 inline-flex items-center gap-1 px-2 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
       >
         <Play className="h-3.5 w-3.5" />
-        放映 (F5)
+        {t('放映 (F5)', 'Present (F5)')} {/* R409 — i18n */}
       </button>
     </div>
   );
@@ -1634,12 +2076,16 @@ function FormatToolbar({
 function ToolbarBtn({
   children,
   title,
+  ariaLabel,
   active,
   disabled,
   onClick,
 }: {
   children: React.ReactNode;
   title: string;
+  /** Optional explicit accessible name for icon-only buttons whose title
+   *  flips to a disabled-explanation (so SRs keep a stable action name). */
+  ariaLabel?: string;
   active?: boolean;
   disabled?: boolean;
   onClick: () => void;
@@ -1648,6 +2094,7 @@ function ToolbarBtn({
     <button
       type="button"
       title={title}
+      aria-label={ariaLabel}
       disabled={disabled}
       // R153 — toggle-state SR exposure. Same treatment as the sibling
       // ToolbarBtn definitions in MarkdownToolbar / DocxEditor / XlsxEditor
@@ -1783,6 +2230,9 @@ function SlideCanvas({
   slideSize,
   runs,
   pictures,
+  shapeFills,
+  shapeLines,
+  stylePreview,
   activeRunId,
   onRunFocus,
   onRunChange,
@@ -1794,6 +2244,12 @@ function SlideCanvas({
   slideSize: { cx: number; cy: number };
   runs: PptxTextRun[];
   pictures?: Record<number, string>;
+  shapeFills?: Record<number, string>;
+  shapeLines?: Record<number, { color?: string; widthPt?: number }>;
+  /** Optimistic fill / outline-colour overlay while a picker drag's
+   *  debounced byte-patch is still in flight (see shapePreview in
+   *  PptxEditor). */
+  stylePreview?: { shapeIdx: number; fill?: string; lineColor?: string } | null;
   activeRunId: string | null;
   onRunFocus: (id: string) => void;
   onRunChange: (id: string, text: string) => void;
@@ -1821,22 +2277,9 @@ function SlideCanvas({
   // pushes/clears these via onGuidesChange while the user drags/resizes.
   const [guides, setGuides] = useState<SnapGuide[]>([]);
 
-  // Group runs by shapeIndex while preserving slide-XML order. Runs that
-  // didn't sit inside a <p:sp> (shapeIndex === -1) each get their own
-  // singleton group so they still surface in the canvas.
-  const groups: { key: string; frame: PptxFrame; runs: PptxTextRun[] }[] = [];
-  for (const run of runs) {
-    if (run.shapeIndex >= 0) {
-      const last = groups[groups.length - 1];
-      if (last && last.key === `s${run.shapeIndex}`) {
-        last.runs.push(run);
-        continue;
-      }
-      groups.push({ key: `s${run.shapeIndex}`, frame: run.frame, runs: [run] });
-    } else {
-      groups.push({ key: `o${run.id}`, frame: run.frame, runs: [run] });
-    }
-  }
+  // Group runs by shapeIndex while preserving slide-XML order (shared
+  // helper — PresentationMode groups the same way for fill/outline parity).
+  const groups = groupRunsByShape(runs);
 
   return (
     <div
@@ -1847,11 +2290,11 @@ function SlideCanvas({
     >
       {groups.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground italic px-4 text-center">
-          這張投影片沒有可編輯的文字。可使用上方「新增文字框」加入一個。
+          {tImp('這張投影片沒有可編輯的文字。可使用上方「新增文字框」加入一個。', 'This slide has no editable text. Use "Add text box" above to add one.')} {/* R409 — i18n */}
         </div>
       ) : (
         groups.map((group, groupIdx) => {
-          const shapeIdx = group.runs[0]?.shapeIndex ?? -1;
+          const shapeIdx = group.shapeIdx;
           // Pass every other group's frame as a snap candidate. We exclude
           // the active group itself so the shape can't snap to its own
           // edges (which would freeze it in place).
@@ -1859,6 +2302,16 @@ function SlideCanvas({
             .filter((_, i) => i !== groupIdx)
             .map((g) => g.frame);
           const pictureUrl = shapeIdx >= 0 ? pictures?.[shapeIdx] : undefined;
+          // Preview (mid-picker-drag) wins over the parsed model.
+          const preview =
+            shapeIdx >= 0 && stylePreview?.shapeIdx === shapeIdx ? stylePreview : null;
+          const fillColor =
+            shapeIdx >= 0 ? (preview?.fill ?? shapeFills?.[shapeIdx]) : undefined;
+          const lineBase = shapeIdx >= 0 ? shapeLines?.[shapeIdx] : undefined;
+          const line =
+            lineBase || preview?.lineColor
+              ? { color: preview?.lineColor ?? lineBase?.color, widthPt: lineBase?.widthPt ?? 1 }
+              : undefined;
           return (
             <ShapeFrame
               key={group.key}
@@ -1867,6 +2320,8 @@ function SlideCanvas({
               pxPerEmu={pxPerEmu}
               runs={group.runs}
               pictureUrl={pictureUrl}
+              fillColor={fillColor}
+              line={line}
               activeRunId={activeRunId}
               onRunFocus={onRunFocus}
               onRunChange={onRunChange}
@@ -1915,6 +2370,8 @@ function ShapeFrame({
   pxPerEmu,
   runs,
   pictureUrl,
+  fillColor,
+  line,
   activeRunId,
   onRunFocus,
   onRunChange,
@@ -1931,6 +2388,10 @@ function ShapeFrame({
   pxPerEmu: number;
   runs: PptxTextRun[];
   pictureUrl?: string;
+  /** Explicit solid fill (6-digit hex, no '#') for the shape overlay. */
+  fillColor?: string;
+  /** Explicit outline; width in pt, scaled to canvas px via pxPerEmu. */
+  line?: { color?: string; widthPt?: number };
   activeRunId: string | null;
   onRunFocus: (id: string) => void;
   onRunChange: (id: string, text: string) => void;
@@ -2376,8 +2837,18 @@ function ShapeFrame({
         >
           {resizeOffset
             ? `${Math.round(liveCx / 12700)} × ${Math.round(liveCy / 12700)} pt`
-            : `${altDuplicating ? '+ 複製 ' : ''}X ${Math.round(liveX / 12700)} · Y ${Math.round(liveY / 12700)} pt`}
+            : `${altDuplicating ? tImp('+ 複製 ', '+ Duplicate ') : ''}X ${Math.round(liveX / 12700)} · Y ${Math.round(liveY / 12700)} pt`}
         </div>
+      )}
+      {/* Fill overlay — explicit <a:solidFill> from <p:spPr> (or the live
+          picker preview) rendered behind the runs / picture so the canvas
+          matches PowerPoint's paint order. pointer-events-none keeps clicks
+          routed to the textarea / handles. */}
+      {fillColor && (
+        <div
+          className="absolute inset-0 pointer-events-none rounded-sm"
+          style={{ backgroundColor: `#${fillColor}` }}
+        />
       )}
       {/* Picture overlay — when this shape carries a `<a:blipFill>` we render
           the resolved data-URL as a stretched <img> behind the runs. The
@@ -2391,6 +2862,18 @@ function ShapeFrame({
           alt=""
           draggable={false}
           className="absolute inset-0 w-full h-full object-cover pointer-events-none rounded-sm"
+        />
+      )}
+      {/* Outline overlay — explicit <a:ln> srgbClr line. Width scales with
+          the canvas (1 pt = 12700 EMU), floor 1px so thin lines stay
+          visible at small zoom. Drawn above fill / picture so the border
+          rims the shape like PowerPoint does. */}
+      {line && (
+        <div
+          className="absolute inset-0 pointer-events-none rounded-sm"
+          style={{
+            border: `${Math.max(1, Math.round((line.widthPt ?? 1) * 12700 * pxPerEmu))}px solid #${line.color ?? '000000'}`,
+          }}
         />
       )}
       {runs.map((run) => (
@@ -2502,7 +2985,7 @@ function ShapeFrame({
                 key={h}
                 role="presentation"
                 onPointerDown={(e) => startResize(e, h)}
-                title={isCorner ? '拖曳調整大小 · Shift 鎖定等比例' : '拖曳調整大小（單軸）'}
+                title={isCorner ? tImp('拖曳調整大小 · Shift 鎖定等比例', 'Drag to resize · Shift to lock aspect ratio') : tImp('拖曳調整大小（單軸）', 'Drag to resize (single axis)')}
                 className={cn(
                   'absolute h-2 w-2 rounded-sm bg-background border border-primary',
                   pos,
@@ -2569,10 +3052,43 @@ function RunInputCanvas({
           color: style.color ? `#${style.color}` : undefined,
           fontSize: `${fontSizePx}px`,
           fontFamily: withEmojiFallback(style.fontFamily),
+          // Paragraph alignment (<a:pPr algn>) — WYSIWYG with PowerPoint.
+          textAlign: paraAlignToCss(run.align),
         }}
       />
     </div>
   );
+}
+
+/** Map OOXML `algn` to CSS text-align; undefined = inherit (left). */
+function paraAlignToCss(align?: 'l' | 'ctr' | 'r'): 'left' | 'center' | 'right' | undefined {
+  return align === 'ctr' ? 'center' : align === 'r' ? 'right' : align === 'l' ? 'left' : undefined;
+}
+
+/**
+ * Group runs by shapeIndex while preserving slide-XML order. Runs that
+ * didn't sit inside a <p:sp> (shapeIndex === -1) each get their own
+ * singleton group so they still surface. Shared by SlideCanvas and
+ * PresentationMode so shape-level styling (fill / outline) wraps the same
+ * run sets in both renderers.
+ */
+function groupRunsByShape(
+  runs: PptxTextRun[],
+): { key: string; shapeIdx: number; frame: PptxFrame; runs: PptxTextRun[] }[] {
+  const groups: { key: string; shapeIdx: number; frame: PptxFrame; runs: PptxTextRun[] }[] = [];
+  for (const run of runs) {
+    if (run.shapeIndex >= 0) {
+      const last = groups[groups.length - 1];
+      if (last && last.key === `s${run.shapeIndex}`) {
+        last.runs.push(run);
+        continue;
+      }
+      groups.push({ key: `s${run.shapeIndex}`, shapeIdx: run.shapeIndex, frame: run.frame, runs: [run] });
+    } else {
+      groups.push({ key: `o${run.id}`, shapeIdx: -1, frame: run.frame, runs: [run] });
+    }
+  }
+  return groups;
 }
 
 /**
@@ -2581,16 +3097,18 @@ function RunInputCanvas({
  * shapes lucide has no exact match (roundRect) we reuse Square so the row
  * stays visually balanced.
  */
+// R409 — labelZh/labelEn pair (module-level const; translate at render)
 const SHAPE_OPTIONS: ReadonlyArray<{
   kind: PptxShapeKind;
-  label: string;
+  labelZh: string;
+  labelEn: string;
   Icon: typeof Square;
 }> = [
-  { kind: 'rect', label: '矩形', Icon: Square },
-  { kind: 'roundRect', label: '圓角矩形', Icon: Square },
-  { kind: 'ellipse', label: '橢圓', Icon: Circle },
-  { kind: 'triangle', label: '三角形', Icon: Triangle },
-  { kind: 'rightArrow', label: '右箭頭', Icon: ArrowRight },
+  { kind: 'rect', labelZh: '矩形', labelEn: 'Rectangle', Icon: Square },
+  { kind: 'roundRect', labelZh: '圓角矩形', labelEn: 'Rounded rectangle', Icon: Square },
+  { kind: 'ellipse', labelZh: '橢圓', labelEn: 'Ellipse', Icon: Circle },
+  { kind: 'triangle', labelZh: '三角形', labelEn: 'Triangle', Icon: Triangle },
+  { kind: 'rightArrow', labelZh: '右箭頭', labelEn: 'Right arrow', Icon: ArrowRight },
 ];
 
 /**
@@ -2706,18 +3224,18 @@ function ShapePicker({ onAdd }: { onAdd: (kind: PptxShapeKind) => void }): JSX.E
           title={tImp('新增圖形到目前投影片 — 點擊選擇形狀 (矩形 / 圓角矩形 / 橢圓 / 三角形 / 右箭頭)', 'Add shape to current slide — click to pick (rectangle / rounded rect / ellipse / triangle / right arrow)')}
         >
           <Shapes className="h-3 w-3" />
-          新增圖形
+          {tImp('新增圖形', 'Add shape')} {/* R409 — i18n */}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[160px]">
-        {SHAPE_OPTIONS.map(({ kind, label, Icon }) => (
+        {SHAPE_OPTIONS.map(({ kind, labelZh, labelEn, Icon }) => (
           <DropdownMenuItem
             key={kind}
             onSelect={() => onAdd(kind)}
             className="flex items-center gap-2"
           >
             <Icon className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-sm">{label}</span>
+            <span className="text-sm">{tImp(labelZh, labelEn)}</span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -2810,14 +3328,16 @@ function LayoutPicker({ onApply }: { onApply: (id: PptxLayoutId) => void }): JSX
           title={tImp('套用版面配置到目前投影片 — 點擊選擇配置 (標題投影片 / 標題與內容 / 兩欄內容 / 章節標題 / 僅標題 / 空白) · 會清除目前投影片的文字框內容', 'Apply layout to current slide — click to pick (Title slide / Title + Content / Two-column / Section header / Title only / Blank) · clears existing text boxes on this slide')}
         >
           <LayoutTemplate className="h-3 w-3" />
-          版面配置
+          {tImp('版面配置', 'Layout')} {/* R409 — i18n */}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[180px]">
         {PPTX_LAYOUTS.map((l) => (
           <DropdownMenuItem key={l.id} onSelect={() => onApply(l.id)} className="flex flex-col items-start gap-0.5">
-            <span className="text-sm">{l.label}</span>
-            <span className="text-[10px] text-muted-foreground">{l.hint}</span>
+            {/* R409 — bilingual; tImp matches this component's existing
+                trigger-button convention above. */}
+            <span className="text-sm">{tImp(l.labelZh, l.labelEn)}</span>
+            <span className="text-[10px] text-muted-foreground">{tImp(l.hintZh, l.hintEn)}</span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -2954,12 +3474,13 @@ function PresentationMode({
     >
       <div className="flex items-center justify-between px-4 py-2 text-xs bg-black/70 border-b border-white/10">
         <div>
-          {atEnd ? '簡報結束' : `投影片 ${idx + 1} / ${slides.length}`}
+          {/* R409 — i18n */}
+          {atEnd ? tImp('簡報結束', 'End of presentation') : tImp(`投影片 ${idx + 1} / ${slides.length}`, `Slide ${idx + 1} / ${slides.length}`)}
         </div>
         <div className="flex items-center gap-3 text-white/70">
           <span>
             {atEnd
-              ? '按任意鍵 / 點擊離開 · ← / PageUp 返回最後一張'
+              ? tImp('按任意鍵 / 點擊離開 · ← / PageUp 返回最後一張', 'Press any key / click to exit · ← / PageUp to return to the last slide')
               // Surface Space alongside →: it's the universal slideshow-
               // advance key (PowerPoint / Keynote / reveal.js — see the
               // atEnd comment block above) and what every wireless presenter
@@ -2970,7 +3491,7 @@ function PresentationMode({
               // line 2308 already calls out. Splitting forward / back keys
               // because Space only advances; lumping it under "切換"
               // would imply Space goes backward too, which it doesn't.
-              : '→ / Space / PageDown 下一張 · ← / PageUp 上一張 · Home / End 首末張 · N 顯示備忘稿 · Esc 結束'}
+              : tImp('→ / Space / PageDown 下一張 · ← / PageUp 上一張 · Home / End 首末張 · N 顯示備忘稿 · Esc 結束', '→ / Space / PageDown next · ← / PageUp previous · Home / End first / last · N show notes · Esc end')}
           </span>
           <button
             type="button"
@@ -2986,7 +3507,7 @@ function PresentationMode({
             title={tImp('結束放映 (Esc)', 'End slideshow (Esc)')}
           >
             <X className="h-3.5 w-3.5" />
-            結束
+            {tImp('結束', 'End')} {/* R409 — i18n */}
           </button>
         </div>
       </div>
@@ -3008,22 +3529,48 @@ function PresentationMode({
               {slide.runs.length === 0 ? (
                 <div className="text-gray-400 italic m-auto">{tImp('（這張投影片沒有文字）', '(This slide has no text)')}</div>
               ) : (
-                slide.runs.map((run) => {
-                  const st = run.style ?? {};
+                // Group consecutive runs by shapeIndex (same grouping as the
+                // edit canvas) so shape fill / outline wrap all of the
+                // shape's runs — WYSIWYG with the canvas overlays. The flat
+                // column layout is unchanged; filled / outlined groups just
+                // pick up padding so the text doesn't touch the border.
+                groupRunsByShape(slide.runs).map((group) => {
+                  const fill =
+                    group.shapeIdx >= 0 ? slide.shapeFills?.[group.shapeIdx] : undefined;
+                  const line =
+                    group.shapeIdx >= 0 ? slide.shapeLines?.[group.shapeIdx] : undefined;
                   return (
                     <div
-                      key={run.id}
-                      className="whitespace-pre-wrap leading-snug"
+                      key={group.key}
+                      className={cn((fill || line) && 'px-3 py-2 rounded')}
                       style={{
-                        fontWeight: st.bold ? 'bold' : undefined,
-                        fontStyle: st.italic ? 'italic' : undefined,
-                        textDecoration: st.underline ? 'underline' : undefined,
-                        color: st.color ? `#${st.color}` : undefined,
-                        fontSize: st.size ? `${st.size}px` : '24px',
-                        fontFamily: withEmojiFallback(st.fontFamily),
+                        backgroundColor: fill ? `#${fill}` : undefined,
+                        // 1 pt ≈ 1.33 px at 96 dpi.
+                        border: line
+                          ? `${Math.max(1, Math.round(((line.widthPt ?? 1) * 4) / 3))}px solid #${line.color ?? '000000'}`
+                          : undefined,
                       }}
                     >
-                      {run.text || ' '}
+                      {group.runs.map((run) => {
+                        const st = run.style ?? {};
+                        return (
+                          <div
+                            key={run.id}
+                            className="whitespace-pre-wrap leading-snug"
+                            style={{
+                              fontWeight: st.bold ? 'bold' : undefined,
+                              fontStyle: st.italic ? 'italic' : undefined,
+                              textDecoration: st.underline ? 'underline' : undefined,
+                              color: st.color ? `#${st.color}` : undefined,
+                              fontSize: st.size ? `${st.size}px` : '24px',
+                              fontFamily: withEmojiFallback(st.fontFamily),
+                              textAlign: paraAlignToCss(run.align),
+                            }}
+                          >
+                            {run.text || ' '}
+                          </div>
+                        );
+                      })}
                     </div>
                   );
                 })
@@ -3107,15 +3654,16 @@ function PresentationMode({
           }}
           disabled={!atEnd && idx === 0}
           title={
+            // R409 — i18n
             !atEnd && idx === 0
-              ? '已經是第一張'
+              ? tImp('已經是第一張', 'Already at the first slide')
               : atEnd
-                ? '返回最後一張 (← / PageUp)'
-                : '上一張 (← / PageUp)'
+                ? tImp('返回最後一張 (← / PageUp)', 'Return to the last slide (← / PageUp)')
+                : tImp('上一張 (← / PageUp)', 'Previous slide (← / PageUp)')
           }
           className="px-3 py-1 text-xs rounded hover:bg-white/10 disabled:opacity-30"
         >
-          {atEnd ? '← 返回最後一張' : '← 上一張'}
+          {atEnd ? tImp('← 返回最後一張', '← Back to last slide') : tImp('← 上一張', '← Previous')}
         </button>
         <button
           type="button"
@@ -3125,15 +3673,16 @@ function PresentationMode({
           }}
           disabled={atEnd}
           title={
+            // R409 — i18n
             atEnd
-              ? '簡報已結束 — 按 ← / PageUp 返回最後一張即可切換備忘稿'
+              ? tImp('簡報已結束 — 按 ← / PageUp 返回最後一張即可切換備忘稿', 'Presentation ended — press ← / PageUp to return to the last slide to toggle notes')
               : showNotes
-                ? '隱藏備忘稿 (N)'
-                : '顯示備忘稿 (N)'
+                ? tImp('隱藏備忘稿 (N)', 'Hide notes (N)')
+                : tImp('顯示備忘稿 (N)', 'Show notes (N)')
           }
           className="px-3 py-1 text-xs rounded hover:bg-white/10 disabled:opacity-30"
         >
-          {showNotes ? '隱藏備忘稿' : '顯示備忘稿'} (N)
+          {showNotes ? tImp('隱藏備忘稿', 'Hide notes') : tImp('顯示備忘稿', 'Show notes')} (N)
         </button>
         <button
           type="button"
@@ -3146,10 +3695,10 @@ function PresentationMode({
             if (idx >= slides.length - 1) setAtEnd(true);
             else setIdx((i) => i + 1);
           }}
-          title={atEnd ? '結束放映 (Esc)' : '下一張 (→ / Space / PageDown)'}
+          title={atEnd ? tImp('結束放映 (Esc)', 'End slideshow (Esc)') : tImp('下一張 (→ / Space / PageDown)', 'Next slide (→ / Space / PageDown)')}
           className="px-3 py-1 text-xs rounded hover:bg-white/10"
         >
-          {atEnd ? '結束放映' : '下一張 →'}
+          {atEnd ? tImp('結束放映', 'End slideshow') : tImp('下一張 →', 'Next →')} {/* R409 — i18n */}
         </button>
       </div>
     </div>
@@ -3271,8 +3820,8 @@ function SlideRail({
           // tooltip pretending to be useful information.
           const titleEntry = titles.find((t) => t.idx === i);
           const rawTitle = titleEntry?.title ?? '';
-          const hasTitle = rawTitle && rawTitle !== '(無標題)';
-          const display = hasTitle ? rawTitle : `投影片 ${i + 1}`;
+          const hasTitle = rawTitle !== ''; // R409 — outline now uses '' sentinel
+          const display = hasTitle ? rawTitle : tImp(`投影片 ${i + 1}`, `Slide ${i + 1}`);
           return (
             <div
               key={i}
@@ -3351,7 +3900,7 @@ function SlideRail({
                 // are derived from slide content, not user-editable
                 // labels) so the hint set is just drag + right-click,
                 // matching what's actually available here.
-                title={`${display}（拖曳排序 · 右鍵選單）`}
+                title={tImp(`${display}（拖曳排序 · 右鍵選單）`, `${display} (drag to reorder · right-click for menu)`)}
                 className="w-full flex items-center gap-2 px-2 py-2"
               >
                 <span className={cn('font-mono w-6 text-right shrink-0', active ? 'opacity-90' : 'text-muted-foreground')}>
@@ -3402,15 +3951,16 @@ function SlideRail({
                       the lone scope drop in a row that otherwise consistently
                       discloses its target. Aligned to match the rail's
                       established vocabulary verbatim. */}
+                  {/* R409 — i18n */}
                   <RailIconBtn
-                    title={i === 0 ? '已經是第一張' : '上移此投影片'}
+                    title={i === 0 ? tImp('已經是第一張', 'Already at the first slide') : tImp('上移此投影片', 'Move this slide up')}
                     disabled={i === 0}
                     onClick={() => onMoveUp(i)}
                   >
                     <ChevronUp className="h-3 w-3" />
                   </RailIconBtn>
                   <RailIconBtn
-                    title={i === slideCount - 1 ? '已經是最後一張' : '下移此投影片'}
+                    title={i === slideCount - 1 ? tImp('已經是最後一張', 'Already at the last slide') : tImp('下移此投影片', 'Move this slide down')}
                     disabled={i === slideCount - 1}
                     onClick={() => onMoveDown(i)}
                   >
@@ -3441,7 +3991,7 @@ function SlideRail({
                       verbs. (The two move buttons were aligned in a follow-
                       up — see the comment attached to them above.) */}
                   <RailIconBtn
-                    title={slideCount <= 1 ? '至少要保留一張投影片' : '刪除此投影片'}
+                    title={slideCount <= 1 ? tImp('至少要保留一張投影片', 'At least one slide must remain') : tImp('刪除此投影片', 'Delete this slide')}
                     disabled={slideCount <= 1}
                     onClick={() => onDelete(i)}
                   >
@@ -3471,7 +4021,7 @@ function SlideRail({
         className="text-xs px-2 py-2 border-t border-border hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
         title={tImp('在目前投影片之後新增一張（複製目前投影片的內容）', 'Add a new slide after the current one (copies current slide content)')}
       >
-        + 新增（複製目前頁）
+        {tImp('+ 新增（複製目前頁）', '+ Add (duplicates current slide)')} {/* R409 — i18n */}
       </button>
       {/* R146 — flat-index drift cluster correction (R136/R137/R140/R145
           paradigm). Two upstream comments (line 3173 and line 3213) each
@@ -3533,7 +4083,7 @@ function SlideRail({
               }}
               className="w-full text-left px-3 py-1.5 hover:bg-accent"
             >
-              複製此投影片
+              {tImp('複製此投影片', 'Duplicate this slide')} {/* R409 — i18n */}
             </button>
             {/* Boundary-aware tooltips + visible-label parity mirror the
                 sibling rail-icon buttons ~140 lines up in this same
@@ -3575,41 +4125,41 @@ function SlideRail({
               type="button"
               role="menuitem"
               disabled={ctxMenu.idx === 0}
-              title={ctxMenu.idx === 0 ? '已經是第一張' : undefined}
+              title={ctxMenu.idx === 0 ? tImp('已經是第一張', 'Already at the first slide') : undefined}
               onClick={() => {
                 onMoveUp(ctxMenu.idx);
                 setCtxMenu(null);
               }}
               className="w-full text-left px-3 py-1.5 hover:bg-accent disabled:opacity-40 disabled:pointer-events-none"
             >
-              上移此投影片
+              {tImp('上移此投影片', 'Move this slide up')}
             </button>
             <button
               type="button"
               role="menuitem"
               disabled={ctxMenu.idx === slideCount - 1}
-              title={ctxMenu.idx === slideCount - 1 ? '已經是最後一張' : undefined}
+              title={ctxMenu.idx === slideCount - 1 ? tImp('已經是最後一張', 'Already at the last slide') : undefined}
               onClick={() => {
                 onMoveDown(ctxMenu.idx);
                 setCtxMenu(null);
               }}
               className="w-full text-left px-3 py-1.5 hover:bg-accent disabled:opacity-40 disabled:pointer-events-none"
             >
-              下移此投影片
+              {tImp('下移此投影片', 'Move this slide down')}
             </button>
             <div className="my-1 h-px bg-border" />
             <button
               type="button"
               role="menuitem"
               disabled={slideCount <= 1}
-              title={slideCount <= 1 ? '至少要保留一張投影片' : undefined}
+              title={slideCount <= 1 ? tImp('至少要保留一張投影片', 'At least one slide must remain') : undefined}
               onClick={() => {
                 onDelete(ctxMenu.idx);
                 setCtxMenu(null);
               }}
               className="w-full text-left px-3 py-1.5 text-destructive hover:bg-destructive/10 disabled:opacity-40 disabled:pointer-events-none"
             >
-              刪除此投影片
+              {tImp('刪除此投影片', 'Delete this slide')}
             </button>
           </div>
         );
@@ -3738,11 +4288,11 @@ function PptxNavPanel({
         className="px-3 py-2 text-[10px] uppercase tracking-wider text-muted-foreground font-medium border-b"
         title={tImp('↑/↓ 切換 · Home/End 跳到首/末', '↑/↓ to switch · Home/End to jump to first/last')}
       >
-        投影片大綱
+        {tImp('投影片大綱', 'Slide outline')} {/* R409 — i18n */}
       </div>
       {outline.length === 0 ? (
         <div className="px-3 py-2 text-[11px] text-muted-foreground italic">
-          （沒有投影片）
+          {tImp('（沒有投影片）', '(No slides)')}
         </div>
       ) : (
         <ul ref={listRef} className="py-1">
@@ -3760,7 +4310,7 @@ function PptxNavPanel({
                       ? 'bg-primary/15 text-foreground font-medium'
                       : 'hover:bg-secondary/80',
                   )}
-                  title={e.title}
+                  title={e.title || tImp('(無標題)', '(Untitled)')}
                 >
                   <span
                     className={cn(
@@ -3770,7 +4320,7 @@ function PptxNavPanel({
                   >
                     {e.idx + 1}
                   </span>
-                  <span className="truncate">{e.title}</span>
+                  <span className="truncate">{e.title || tImp('(無標題)', '(Untitled)')}</span>{/* R409 — i18n */}
                 </button>
               </li>
             );

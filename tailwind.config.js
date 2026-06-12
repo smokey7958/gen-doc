@@ -1,6 +1,7 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  darkMode: ['class'],
+  // R410 — no `darkMode` key: the app is pinned light-only by design
+  // (see src/renderer/index.css) and no `dark:` variants exist in src.
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     container: {

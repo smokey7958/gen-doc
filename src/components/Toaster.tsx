@@ -3,10 +3,10 @@
  *
  * Mount once near the App root. Listens to the store, auto-dismisses by
  * comparing each toast's `expiresAt` against a 250ms tick (cheap; running
- * only while at least one toast is visible). Not animated beyond the
- * Tailwind transition on hover — the deliberately simple rendering means
- * fast keyboard / mouse users can fire several toasts back-to-back without
- * frame jank.
+ * only while at least one toast is visible). The only animation is the
+ * R410 entrance keyframe (`animate-toast-in`, a 150ms transform/opacity
+ * ease — GPU-composited, so fast keyboard / mouse users can still fire
+ * several toasts back-to-back without frame jank).
  *
  * Position is fixed bottom-right so it never overlaps the editor's
  * top-bar / find dialog (top-right) or the AI panel (right edge above the
@@ -151,7 +151,8 @@ export function Toaster(): JSX.Element {
             onFocus={() => pause(t.id, 'focus')}
             onBlur={() => resume(t.id, 'focus')}
             className={cn(
-              'pointer-events-auto flex items-start gap-2 px-3 py-2 rounded-md border shadow-md text-sm',
+              // R410 — animate-toast-in: entrance keyframe (index.css).
+              'pointer-events-auto flex items-start gap-2 px-3 py-2 rounded-md border shadow-md text-sm animate-toast-in',
               VARIANT_STYLES[t.variant],
             )}
           >
@@ -193,7 +194,7 @@ export function Toaster(): JSX.Element {
               // the unannounced `<X>` icon.
               aria-label={tImp('關閉通知', 'Dismiss notification')}
               onClick={() => dismiss(t.id)}
-              className="text-muted-foreground hover:text-foreground rounded p-0.5 -mr-1 -mt-0.5"
+              className="text-muted-foreground hover:text-foreground transition-colors rounded p-0.5 -mr-1 -mt-0.5"
             >
               <X className="h-3.5 w-3.5" />
             </button>

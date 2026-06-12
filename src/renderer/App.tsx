@@ -173,21 +173,43 @@ export function App(): JSX.Element {
   }, [focusMode]);
   const ws = useWorkspace();
   const setModel = useAI((s) => s.setModel);
+  // R406 — pull useT into App so the focus-mode exit pill / drop overlay
+  // strings flip language together with the rest of the chrome. Previously
+  // those two visible labels were hardcoded Chinese while their tooltips
+  // already routed through tImp — same R405 leak pattern this round
+  // sweeps elsewhere (TabBar close-confirm, DiffPreview describeOp,
+  // FileExplorer FileRow tooltip).
+  const t = useT();
 
   // Keep the OS window title in sync with the workspace. Prefer the on-disk
   // filename over manifest.title because the title field is rarely set on
   // legacy/auto-saved files — showing "未命名 — Gen Doc" for a clearly named
   // `2026-q1-report.gd` is uninformative when Alt+Tab'ing or picking from
   // the dock. Manifest title still wins when the user explicitly named it.
+  // R408 — pull the live locale so the「未命名 / Untitled」 fallback in the
+  // OS window title flips when the user switches language. Previously this
+  // useEffect's deps didn't include locale at all, so an English-mode user
+  // with an unnamed unsaved workspace saw「● 未命名 — Gen Doc」 in the
+  // title bar / Alt+Tab list / dock — the only Chinese leak visible
+  // outside the app window's content area.
+  const locale = useLocale((s) => s.locale);
   useEffect(() => {
     const dirtyMark = ws.dirty ? '● ' : '';
+    const untitled = locale === 'zh' ? '未命名' : 'Untitled';
     let label = ws.manifest.title;
+    // Keep the existing sentinel check — `emptyManifest()` still stores
+    //「未命名」 as the raw default in `manifest.title`, so we test against
+    // that constant regardless of locale. Display fallback below replaces
+    // sentinel/empty with the locale-resolved string so a new untitled
+    // workspace shows「未命名」 in zh and「Untitled」 in en in the
+    // title bar / Alt+Tab list.
     if ((!label || label === '未命名') && ws.filePath) {
       const base = ws.filePath.split(/[\\/]/).pop() ?? ws.filePath;
       label = base.replace(/\.gd$/i, '');
     }
-    document.title = `${dirtyMark}${label || '未命名'} — Gen Doc`;
-  }, [ws.manifest.title, ws.filePath, ws.dirty]);
+    if (!label || label === '未命名') label = untitled;
+    document.title = `${dirtyMark}${label} — Gen Doc`;
+  }, [ws.manifest.title, ws.filePath, ws.dirty, locale]);
 
   // Mirror dirty state to the main process so the OS close button can prompt
   // before destroying unsaved work. Fire-and-forget; preload uses ipcRenderer.send.
@@ -1651,7 +1673,18 @@ export function App(): JSX.Element {
             if (!cur) return;
             if (
               cur.dirty &&
-              !(await window.gendoc.app.confirm(`「${cur.name}」尚未儲存，確定關閉？`))
+              // R406 — bilingual confirm. Was hardcoded Chinese while the
+              // four other dirty-discard confirms in this file (handleNew /
+              // handleOpen / handleOpenRecent / drop-`.gd`) already route
+              // through tImp. The Ctrl+W close-tab path was the lone
+              // outlier — a user running in English saw every other
+              // close-confirm in English but Ctrl+W on a dirty tab still
+              // popped Traditional Chinese. Same pattern as TabBar
+              // closeWithConfirm / closeMany this round.
+              !(await window.gendoc.app.confirm(tImp(
+                `「${cur.name}」尚未儲存，確定關閉？`,
+                `"${cur.name}" has unsaved changes. Close anyway?`,
+              )))
             )
               return;
             // Flush pending debounced serializes (PPTX/DOCX/XLSX) before snapshot
@@ -1907,7 +1940,15 @@ export function App(): JSX.Element {
         try {
           const path = window.gendoc.webUtils.getPathForFile(file);
           if (!path) {
-            failures.push(`${file.name || '(unknown)'}：無法取得路徑（資料夾或非檔案）`);
+            // R406 — bilingual reason. The summary toast below (1939 / 1941)
+            // already uses tImp; in English mode the toast read「Failed to
+            // open: foo：無法取得路徑（資料夾或非檔案）」 — half-English,
+            // half-Chinese reason. Reason-line is constructed here per-file
+            // so we route via tImp at the same site.
+            failures.push(`${file.name || '(unknown)'}：${tImp(
+              '無法取得路徑（資料夾或非檔案）',
+              "couldn't resolve path (folder or non-file)",
+            )}`);
             continue;
           }
           const existing = useWorkspace
@@ -1922,7 +1963,11 @@ export function App(): JSX.Element {
           if (useWorkspace.getState().workspaceId !== dropWorkspaceId) break;
           const id = useWorkspace.getState().openExternalFile(content, path);
           if (!id) {
-            failures.push(`${content.name}：不支援的檔案類型`);
+            // R406 — same sibling-leak as the resolve-path branch above.
+            failures.push(`${content.name}：${tImp(
+              '不支援的檔案類型',
+              'unsupported file type',
+            )}`);
           }
         } catch (err) {
           failures.push(`${file.name}：${(err as Error).message}`);
@@ -2027,7 +2072,11 @@ export function App(): JSX.Element {
           className="fixed top-3 right-3 z-50 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-background/70 hover:bg-background border border-border/60 hover:border-border shadow-sm text-[11px] text-muted-foreground hover:text-foreground backdrop-blur-sm transition-all"
         >
           <Minimize2 className="h-3 w-3" />
-          離開專注模式
+          {/* R406 — visible label was hardcoded Chinese while the tooltip
+              above already routed through tImp. Now uses the App-level
+              `t = useT()` so the pill text flips together with the
+              tooltip on language toggle. */}
+          {t('離開專注模式', 'Exit focus mode')}
         </button>
       )}
       <SettingsDialog
@@ -2048,7 +2097,14 @@ export function App(): JSX.Element {
           <div className="flex flex-col items-center gap-3 px-8 py-6 rounded-lg border-2 border-dashed border-primary bg-background/95 shadow-lg">
             <Upload className="h-8 w-8 text-primary" />
             <div className="text-sm font-medium">
-              將檔案放入以開啟（.gd / .md / .html / .docx / .xlsx / .pptx）
+              {/* R406 — same drop-this-round bilingual leak. Drop overlay
+                  is one of the most visible chrome surfaces the moment a
+                  user drags any file over the window — flipping it to
+                  English was the most obvious gap after toggling locale. */}
+              {t(
+                '將檔案放入以開啟（.gd / .md / .html / .docx / .xlsx / .pptx）',
+                'Drop files to open (.gd / .md / .html / .docx / .xlsx / .pptx)',
+              )}
             </div>
           </div>
         </div>
@@ -2316,12 +2372,24 @@ function Toolbar({
               Mirror the filePath sibling's "value || placeholder" shape so
               empty manifest titles still surface the visible '未命名專案'
               fallback in the tooltip rather than nothing. */}
-          <span
-            className="text-sm font-medium truncate"
-            title={title || t('未命名專案', 'Untitled project')}
-          >
-            {title || t('未命名專案', 'Untitled project')}
-          </span>
+          {/* R408 — sentinel-aware fallback. `emptyManifest()` stores the raw
+              `未命名` string as `manifest.title` for every fresh workspace,
+              so the previous `title || …` only kicked in when the title was
+              explicitly cleared. In English mode the toolbar therefore
+              showed「未命名」 on every new project — the same leak the
+              document.title fix above closes. Replace sentinel-or-empty
+              with the locale-resolved fallback. */}
+          {(() => {
+            const display =
+              !title || title === '未命名'
+                ? t('未命名專案', 'Untitled project')
+                : title;
+            return (
+              <span className="text-sm font-medium truncate" title={display}>
+                {display}
+              </span>
+            );
+          })()}
         </div>
         <div
           className="text-[10px] text-muted-foreground truncate max-w-full"
