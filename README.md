@@ -4,8 +4,6 @@
 
 介面支援**中 / 英雙語**（依 OS 語系自動偵測，可在設定切換）。
 
-完整產品 spec 見 [docs/MVP-SPEC.md](docs/MVP-SPEC.md)（內含歷史 Phase 紀錄）。
-
 ## 功能總覽
 
 ### 工作區與檔案
